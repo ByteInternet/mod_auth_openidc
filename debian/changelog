@@ -1,3 +1,10 @@
+libapache2-mod-auth-openidc (1.8.4-1byte1) vivid; urgency=medium
+
+  [ Sjoerd Langkemper ]
+  * Add OIDCAllowUnauthenticated setting
+
+ -- Sjoerd <sjoerd@werkbank>  Fri, 24 Jul 2015 11:50:07 +0200
+
 libapache2-mod-auth-openidc (1.8.4-1) unstable; urgency=medium
 
   * allow for compilation on MS Windows
