@@ -175,6 +175,10 @@ APLOG_USE_MODULE(auth_openidc);
 #define OIDC_CACHE_SECTION_ACCESS_TOKEN "access_token"
 #define OIDC_CACHE_SECTION_PROVIDER "provider"
 
+typedef enum {
+	AUTHENTICATE, PASS, RETURN401
+} unauthenticated_action;
+
 typedef struct oidc_jwks_uri_t {
 	const char *url;
 	int refresh_interval;
@@ -285,6 +289,7 @@ typedef struct oidc_cfg {
 #ifdef USE_LIBHIREDIS
 	/* cache_type= redis: Redis host/port server to use */
 	char *cache_redis_server;
+	char *cache_redis_password;
 #endif
 
 	/* tell the module to strip any mod_auth_openidc related headers that already have been set by the user-agent, normally required for secure operation */
@@ -316,7 +321,7 @@ typedef struct oidc_dir_cfg {
 	char *cookie_path;
 	char *cookie;
 	char *authn_header;
-	int return401;
+	unauthenticated_action unauth_action;
 	apr_array_header_t *pass_cookies;
 	apr_byte_t pass_info_in_headers;
 	apr_byte_t pass_info_in_env_vars;

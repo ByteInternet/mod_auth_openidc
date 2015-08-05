@@ -746,6 +746,38 @@ static const char * oidc_set_pass_claims_as(cmd_parms *cmd, void *m,
 }
 
 /*
+ * define how to act on unauthenticated requests
+ */
+static const char * oidc_set_unauth_action(cmd_parms *cmd, void *m,
+		const char *arg) {
+	oidc_dir_cfg *dir_cfg = (oidc_dir_cfg *) m;
+
+	if (apr_strnatcmp(arg, "auth") == 0) {
+		dir_cfg->unauth_action = AUTHENTICATE;
+		return NULL;
+	}
+
+	if (apr_strnatcmp(arg, "pass") == 0) {
+		dir_cfg->unauth_action = PASS;
+		return NULL;
+	}
+
+	if (apr_strnatcmp(arg, "401") == 0) {
+		dir_cfg->unauth_action = RETURN401;
+		return NULL;
+	}
+
+	return "parameter must be one of 'auth', 'pass' or '401";
+}
+
+/*
+ * OIDCReturn401 is deprecated
+ */
+static const char * oidc_return_401(cmd_parms *cmd, void *struct_ptr, int arg) {
+	return "this primitive is deprecated: use \"OIDCUnAuthAction 401\" instead";
+}
+
+/*
  * create a new server config record with defaults
  */
 void *oidc_create_server_config(apr_pool_t *pool, server_rec *svr) {
@@ -829,6 +861,7 @@ void *oidc_create_server_config(apr_pool_t *pool, server_rec *svr) {
 	c->cache_shm_entry_size_max = OIDC_DEFAULT_CACHE_SHM_ENTRY_SIZE_MAX;
 #ifdef USE_LIBHIREDIS
 	c->cache_redis_server = NULL;
+	c->cache_redis_password = NULL;
 #endif
 
 	c->metadata_dir = NULL;
@@ -1122,6 +1155,9 @@ void *oidc_merge_server_config(apr_pool_t *pool, void *BASE, void *ADD) {
 	c->cache_redis_server =
 			add->cache_redis_server != NULL ?
 					add->cache_redis_server : base->cache_redis_server;
+	c->cache_redis_password =
+			add->cache_redis_password != NULL ?
+					add->cache_redis_password : base->cache_redis_password;
 #endif
 
 	c->metadata_dir =
@@ -1179,7 +1215,7 @@ void *oidc_create_dir_config(apr_pool_t *pool, char *path) {
 	c->cookie = OIDC_DEFAULT_COOKIE;
 	c->cookie_path = OIDC_DEFAULT_COOKIE_PATH;
 	c->authn_header = OIDC_DEFAULT_AUTHN_HEADER;
-	c->return401 = FALSE;
+	c->unauth_action = AUTHENTICATE;
 	c->pass_cookies = apr_array_make(pool, 0, sizeof(const char *));
 	c->pass_info_in_headers = 1;
 	c->pass_info_in_env_vars = 1;
@@ -1204,7 +1240,9 @@ void *oidc_merge_dir_config(apr_pool_t *pool, void *BASE, void *ADD) {
 	c->authn_header = (
 			add->authn_header != OIDC_DEFAULT_AUTHN_HEADER ?
 					add->authn_header : base->authn_header);
-	c->return401 = (add->return401 != FALSE ? add->return401 : base->return401);
+	c->unauth_action = (
+			add->unauth_action != AUTHENTICATE ?
+					add->unauth_action : base->unauth_action);
 	c->pass_cookies = (
 			apr_is_empty_array(add->pass_cookies) != 0 ?
 					add->pass_cookies : base->pass_cookies);
@@ -1932,6 +1970,11 @@ const command_rec oidc_config_cmds[] = {
 				(void*)APR_OFFSETOF(oidc_cfg, cache_redis_server),
 				RSRC_CONF,
 				"Redis server used for caching (<hostname>[:<port>])"),
+		AP_INIT_TAKE1("OIDCRedisCachePassword",
+				oidc_set_string_slot,
+				(void*)APR_OFFSETOF(oidc_cfg, cache_redis_password),
+				RSRC_CONF,
+				"Password for authentication to the Redis servers."),
 #endif
 
 		AP_INIT_TAKE1("OIDCDiscoverURL", oidc_set_url_slot_dir_cfg,
@@ -1955,10 +1998,14 @@ const command_rec oidc_config_cmds[] = {
 				(void *) APR_OFFSETOF(oidc_dir_cfg, cookie),
 				RSRC_CONF|ACCESS_CONF|OR_AUTHCFG,
 				"Define the cookie name for the session cookie."),
-		AP_INIT_FLAG("OIDCReturn401", ap_set_flag_slot,
-				(void *) APR_OFFSETOF(oidc_dir_cfg, return401),
+		AP_INIT_FLAG("OIDCReturn401", oidc_return_401,
+				(void *) APR_OFFSETOF(oidc_dir_cfg, unauth_action),
 				RSRC_CONF|ACCESS_CONF|OR_AUTHCFG,
 				"Indicates whether a user will be redirected to the Provider when not authenticated (Off) or a 401 will be returned (On)."),
+		AP_INIT_TAKE1("OIDCUnAuthAction", oidc_set_unauth_action,
+				(void *) APR_OFFSETOF(oidc_dir_cfg, unauth_action),
+				RSRC_CONF|ACCESS_CONF|OR_AUTHCFG,
+				"Sets the action taken when an unauthenticated request occurs: \"auth\" (default) means redirect to OP for authentication, \"pass\" means always allow the request but pass claims when authenticated, \"401\" means return HTTP 401."),
 		AP_INIT_TAKE1("OIDCPassClaimsAs",
 				oidc_set_pass_claims_as, NULL,
 				RSRC_CONF|ACCESS_CONF|OR_AUTHCFG,
