@@ -1,4 +1,4 @@
-libapache2-mod-auth-openidc (1.8.5-1rc1) vivid; urgency=medium
+libapache2-mod-auth-openidc (1.8.5~rc1-1) vivid; urgency=medium
 
   [ Hans Zandbelt ]
   * add authentication option for Redis server with OIDCRedisCachePassword
