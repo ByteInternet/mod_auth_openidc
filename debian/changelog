@@ -1,3 +1,18 @@
+libapache2-mod-auth-openidc (1.8.5-1rc1) vivid; urgency=medium
+
+  [ Hans Zandbelt ]
+  * add authentication option for Redis server with OIDCRedisCachePassword
+  * ignore Eclipse .settings
+
+  [ Sjoerd Langkemper ]
+  * Add documentation on how to build a package
+
+  [ Hans Zandbelt ]
+  * add missing changelog entry for OIDCRedisCachePassword
+  * add support for OIDCUnAuthAction (deprecates OIDCReturn401)
+
+ -- Sjoerd <sjoerd@byte.nl>  Wed, 05 Aug 2015 10:46:53 +0200
+
 libapache2-mod-auth-openidc (1.8.4-1byte1) vivid; urgency=medium
 
   [ Sjoerd Langkemper ]
