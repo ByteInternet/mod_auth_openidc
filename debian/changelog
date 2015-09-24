@@ -1,3 +1,9 @@
+libapache2-mod-auth-openidc (1.8.5-1byte1) UNRELEASED; urgency=medium
+
+  * Update Byte patches to 1.8.5-1.
+
+ -- Allard Hoeve <allard@byte.nl>  Thu, 24 Sep 2015 15:52:01 +0200
+
 libapache2-mod-auth-openidc (1.8.5-1) unstable; urgency=medium
 
   * HTTP-based logout
