@@ -641,14 +641,14 @@ static const char * oidc_set_token_expiry_claim(cmd_parms *cmd, void *dummy,
 			claim_name);
 
 	if (claim_format) {
-		if ((apr_strnatcmp(claim_required, "absolute") == 0)
-				|| (apr_strnatcmp(claim_required, "relative") == 0)) {
+		if ((apr_strnatcmp(claim_format, "absolute") == 0)
+				|| (apr_strnatcmp(claim_format, "relative") == 0)) {
 			cfg->oauth.introspection_token_expiry_claim_format = apr_pstrdup(
 					cmd->pool, claim_format);
 		} else {
 			return apr_psprintf(cmd->pool,
 					"Invalid value \"%s\" for directive %s; must be either \"absolute\" or \"relative\"",
-					claim_required, cmd->directive->directive);
+					claim_format, cmd->directive->directive);
 		}
 	}
 
@@ -1720,12 +1720,12 @@ const command_rec oidc_config_cmds[] = {
 				oidc_set_encrypted_response_alg,
 				(void *)APR_OFFSETOF(oidc_cfg, provider.id_token_encrypted_response_alg),
 				RSRC_CONF,
-				"The algorithm that the OP should use to encrypt the Content Encryption Key that is used to encrypt the id_token (used only in dynamic client registration); must be one of [RSA1_5|A128KW|A256KW]"),
+				"The algorithm that the OP should use to encrypt the Content Encryption Key that is used to encrypt the id_token (used only in dynamic client registration); must be one of [RSA1_5|A128KW|A256KW|RSA-OAEP]"),
 		AP_INIT_TAKE1("OIDCIDTokenEncryptedResponseEnc",
 				oidc_set_encrypted_response_enc,
 				(void *)APR_OFFSETOF(oidc_cfg, provider.id_token_encrypted_response_enc),
 				RSRC_CONF,
-				"The algorithm that the OP should use to encrypt to the id_token with the Content Encryption Key (used only in dynamic client registration); must be one of [A128CBC-HS256|A256CBC-HS512]"),
+				"The algorithm that the OP should use to encrypt to the id_token with the Content Encryption Key (used only in dynamic client registration); must be one of [A128CBC-HS256|A256CBC-HS512|A128GCM|A192GCM|A256GCM]"),
 		AP_INIT_TAKE1("OIDCUserInfoSignedResponseAlg",
 				oidc_set_signed_response_alg,
 				(void *)APR_OFFSETOF(oidc_cfg, provider.userinfo_signed_response_alg),
@@ -1735,12 +1735,12 @@ const command_rec oidc_config_cmds[] = {
 				oidc_set_encrypted_response_alg,
 				(void *)APR_OFFSETOF(oidc_cfg, provider.userinfo_encrypted_response_alg),
 				RSRC_CONF,
-				"The algorithm that the OP should use to encrypt the Content Encryption Key that is used to encrypt the UserInfo response (used only in dynamic client registration); must be one of [RSA1_5|A128KW|A256KW]"),
+				"The algorithm that the OP should use to encrypt the Content Encryption Key that is used to encrypt the UserInfo response (used only in dynamic client registration); must be one of [RSA1_5|A128KW|A256KW|RSA-OAEP]"),
 		AP_INIT_TAKE1("OIDCUserInfoEncryptedResponseEnc",
 				oidc_set_encrypted_response_enc,
 				(void *)APR_OFFSETOF(oidc_cfg, provider.userinfo_encrypted_response_enc),
 				RSRC_CONF,
-				"The algorithm that the OP should use to encrypt to encrypt the UserInfo response with the Content Encryption Key (used only in dynamic client registration); must be one of [A128CBC-HS256|A256CBC-HS512]"),
+				"The algorithm that the OP should use to encrypt to encrypt the UserInfo response with the Content Encryption Key (used only in dynamic client registration); must be one of [A128CBC-HS256|A256CBC-HS512|A128GCM|A192GCM|A256GCM]"),
 
 		AP_INIT_FLAG("OIDCSSLValidateServer",
 				oidc_set_flag_slot,

@@ -248,7 +248,7 @@ static apr_byte_t oidc_provider_static_config(request_rec *r, oidc_cfg *c,
  * return the oidc_provider_t struct for the specified issuer
  */
 static oidc_provider_t *oidc_get_provider_for_issuer(request_rec *r,
-		oidc_cfg *c, const char *issuer) {
+		oidc_cfg *c, const char *issuer, apr_byte_t allow_discovery) {
 
 	/* by default we'll assume that we're dealing with a single statically configured OP */
 	oidc_provider_t *provider = NULL;
@@ -259,8 +259,8 @@ static oidc_provider_t *oidc_get_provider_for_issuer(request_rec *r,
 	if (c->metadata_dir != NULL) {
 
 		/* try and get metadata from the metadata directory for the OP that sent this response */
-		if ((oidc_metadata_get(r, c, issuer, &provider) == FALSE)
-				|| (provider == NULL)) {
+		if ((oidc_metadata_get(r, c, issuer, &provider, allow_discovery)
+				== FALSE) || (provider == NULL)) {
 
 			/* don't know nothing about this OP/issuer */
 			oidc_error(r, "no provider metadata found for issuer \"%s\"",
@@ -301,7 +301,7 @@ static apr_byte_t oidc_unsolicited_proto_state(request_rec *r, oidc_cfg *c,
 	}
 
 	oidc_provider_t *provider = oidc_get_provider_for_issuer(r, c,
-			jwt->payload.iss);
+			jwt->payload.iss, FALSE);
 	if (provider == NULL) {
 		apr_jwt_destroy(jwt);
 		return FALSE;
@@ -344,8 +344,8 @@ static apr_byte_t oidc_unsolicited_proto_state(request_rec *r, oidc_cfg *c,
 	}
 
 	if (c->metadata_dir != NULL) {
-		if ((oidc_metadata_get(r, c, jwt->payload.iss, &provider) == FALSE)
-				|| (provider == NULL)) {
+		if ((oidc_metadata_get(r, c, jwt->payload.iss, &provider, FALSE)
+				== FALSE) || (provider == NULL)) {
 			oidc_error(r, "no provider metadata found for provider \"%s\"",
 					jwt->payload.iss);
 			apr_jwt_destroy(jwt);
@@ -383,22 +383,6 @@ static apr_byte_t oidc_unsolicited_proto_state(request_rec *r, oidc_cfg *c,
 			"jti \"%s\" validated successfully and is now cached for %" APR_TIME_T_FMT " seconds",
 			jti, apr_time_sec(jti_cache_duration));
 
-	/*
-	 * TODO: pass in 'code' if code flow and check c_hash
-	 */
-	/*
-	 char *c_hash = NULL;
-	 apr_jwt_get_string(r->pool, &jwt->payload.value, "c_hash", &c_hash);
-	 if (c_hash != NULL) {
-	 apr_array_header_t *required_for_flows = apr_array_make(r->pool, 2, sizeof(const char*));
-	 *(const char**) apr_array_push(required_for_flows) = "code";
-	 if (oidc_proto_validate_hash_value(r, provider, jwt, "code", code,
-	 "c_hash", required_for_flows) == FALSE) return FALSE;
-	 }
-	 */
-
-	// TODO: perhaps support encrypted state using shared secret? (issuer for encrypted JWTs must be in JWT header?)
-	//       (now we always use the statically configured provider client_secret...)
 	oidc_jwks_uri_t jwks_uri = { provider->jwks_uri,
 			provider->jwks_refresh_interval, provider->ssl_validate_server };
 	if (oidc_proto_jwt_verify(r, c, jwt, &jwks_uri,
@@ -732,7 +716,8 @@ static int oidc_handle_existing_session(request_rec *r, oidc_cfg * cfg,
 				&s_id_token);
 		/* pass it to the app in a header or environment variable */
 		oidc_util_set_app_info(r, "id_token_payload", s_id_token,
-				OIDC_DEFAULT_HEADER_PREFIX, dir_cfg->pass_info_in_headers, dir_cfg->pass_info_in_env_vars);
+				OIDC_DEFAULT_HEADER_PREFIX, dir_cfg->pass_info_in_headers,
+				dir_cfg->pass_info_in_env_vars);
 	}
 
 	if ((cfg->pass_idtoken_as & OIDC_PASS_IDTOKEN_AS_SERIALIZED)) {
@@ -741,7 +726,8 @@ static int oidc_handle_existing_session(request_rec *r, oidc_cfg * cfg,
 		oidc_session_get(r, session, OIDC_IDTOKEN_SESSION_KEY, &s_id_token);
 		/* pass it to the app in a header or environment variable */
 		oidc_util_set_app_info(r, "id_token", s_id_token,
-				OIDC_DEFAULT_HEADER_PREFIX, dir_cfg->pass_info_in_headers, dir_cfg->pass_info_in_env_vars);
+				OIDC_DEFAULT_HEADER_PREFIX, dir_cfg->pass_info_in_headers,
+				dir_cfg->pass_info_in_env_vars);
 	}
 
 	/* set the access_token in the app headers */
@@ -750,7 +736,8 @@ static int oidc_handle_existing_session(request_rec *r, oidc_cfg * cfg,
 	if (access_token != NULL) {
 		/* pass it to the app in a header or environment variable */
 		oidc_util_set_app_info(r, "access_token", access_token,
-				OIDC_DEFAULT_HEADER_PREFIX, dir_cfg->pass_info_in_headers, dir_cfg->pass_info_in_env_vars);
+				OIDC_DEFAULT_HEADER_PREFIX, dir_cfg->pass_info_in_headers,
+				dir_cfg->pass_info_in_env_vars);
 	}
 
 	/* set the expiry timestamp in the app headers */
@@ -759,9 +746,9 @@ static int oidc_handle_existing_session(request_rec *r, oidc_cfg * cfg,
 			&access_token_expires);
 	if (access_token_expires != NULL) {
 		/* pass it to the app in a header or environment variable */
-		oidc_util_set_app_info(r, "access_token_expires",
-				access_token_expires,
-				OIDC_DEFAULT_HEADER_PREFIX, dir_cfg->pass_info_in_headers, dir_cfg->pass_info_in_env_vars);
+		oidc_util_set_app_info(r, "access_token_expires", access_token_expires,
+				OIDC_DEFAULT_HEADER_PREFIX, dir_cfg->pass_info_in_headers,
+				dir_cfg->pass_info_in_env_vars);
 	}
 
 	/*
@@ -814,7 +801,7 @@ static apr_byte_t oidc_authorization_response_match_state(request_rec *r,
 	}
 
 	*provider = oidc_get_provider_for_issuer(r, c,
-			json_string_value(json_object_get(*proto_state, "issuer")));
+			json_string_value(json_object_get(*proto_state, "issuer")), FALSE);
 
 	return (*provider != NULL);
 }
@@ -935,7 +922,8 @@ static apr_byte_t oidc_get_remote_user(request_rec *r, oidc_cfg *c,
 	if (c->remote_user_claim.reg_exp != NULL) {
 
 		char *error_str = NULL;
-		if (oidc_util_regexp_first_match(r->pool, *user, c->remote_user_claim.reg_exp, user, &error_str) == FALSE) {
+		if (oidc_util_regexp_first_match(r->pool, *user,
+				c->remote_user_claim.reg_exp, user, &error_str) == FALSE) {
 			oidc_error(r, "oidc_util_regexp_first_match failed: %s", error_str);
 			*user = NULL;
 			return FALSE;
@@ -954,7 +942,8 @@ static void oidc_save_in_session(request_rec *r, oidc_cfg *c,
 		session_rec *session, oidc_provider_t *provider, const char *remoteUser,
 		const char *id_token, apr_jwt_t *id_token_jwt, const char *claims,
 		const char *access_token, const int expires_in,
-		const char *refresh_token, const char *session_state) {
+		const char *refresh_token, const char *session_state, const char *state,
+		const char *original_url) {
 
 	/* store the user in the session */
 	session->remote_user = remoteUser;
@@ -972,6 +961,10 @@ static void oidc_save_in_session(request_rec *r, oidc_cfg *c,
 
 	/* store the issuer in the session (at least needed for session mgmt and token refresh */
 	oidc_session_set(r, session, OIDC_ISSUER_SESSION_KEY, provider->issuer);
+
+	/* store the state and original URL in the session for handling browser-back more elegantly */
+	oidc_session_set(r, session, OIDC_REQUEST_STATE_SESSION_KEY, state);
+	oidc_session_set(r, session, OIDC_REQUEST_ORIGINAL_URL, original_url);
 
 	if ((session_state != NULL) && (provider->check_session_iframe != NULL)) {
 		/* store the session state and required parameters session management  */
@@ -1118,6 +1111,36 @@ static const char *oidc_resolve_claims_from_user_info_endpoint(request_rec *r,
 	return result;
 }
 
+/* handle the browser back on an authorization response */
+static apr_byte_t oidc_handle_browser_back(request_rec *r, const char *r_state,
+		session_rec *session) {
+
+	/*  see if we have an existing session and browser-back was used */
+	const char *s_state = NULL, *o_url = NULL;
+
+	if (session->remote_user != NULL) {
+
+		oidc_session_get(r, session, OIDC_REQUEST_STATE_SESSION_KEY, &s_state);
+		oidc_session_get(r, session, OIDC_REQUEST_ORIGINAL_URL, &o_url);
+
+		if ((r_state != NULL) && (s_state != NULL)
+				&& (apr_strnatcmp(r_state, s_state) == 0)) {
+
+			/* log the browser back event detection */
+			oidc_warn(r,
+					"browser back detected, redirecting to original URL: %s",
+					o_url);
+
+			/* go back to the URL that he originally tried to access */
+			apr_table_add(r->headers_out, "Location", o_url);
+
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
 /*
  * complete the handling of an authorization response by obtaining, parsing and verifying the
  * id_token and storing the authenticated user state in the session
@@ -1131,9 +1154,23 @@ static int oidc_handle_authorization_response(request_rec *r, oidc_cfg *c,
 	json_t *proto_state = NULL;
 	apr_jwt_t *jwt = NULL;
 
+	/* see if this response came from a browser-back event */
+	if (oidc_handle_browser_back(r, apr_table_get(params, "state"),
+			session) == TRUE)
+		return HTTP_MOVED_TEMPORARILY;
+
 	/* match the returned state parameter against the state stored in the browser */
 	if (oidc_authorization_response_match_state(r, c,
 			apr_table_get(params, "state"), &provider, &proto_state) == FALSE) {
+		if (c->default_sso_url != NULL) {
+			oidc_warn(r,
+					"invalid authorization response state; a default SSO URL is set, sending the user there: %s",
+					c->default_sso_url);
+			apr_table_add(r->headers_out, "Location", c->default_sso_url);
+			return HTTP_MOVED_TEMPORARILY;
+		}
+		oidc_error(r,
+				"invalid authorization response state and no default SSO URL is set, sending an error...");
 		return HTTP_INTERNAL_SERVER_ERROR;
 	}
 
@@ -1165,6 +1202,12 @@ static int oidc_handle_authorization_response(request_rec *r, oidc_cfg *c,
 	const char *claims = oidc_resolve_claims_from_user_info_endpoint(r, c,
 			provider, params);
 
+	/* restore the original protected URL that the user was trying to access */
+	const char *original_url = apr_pstrdup(r->pool,
+			json_string_value(json_object_get(proto_state, "original_url")));
+	const char *original_method = apr_pstrdup(r->pool,
+			json_string_value(json_object_get(proto_state, "original_method")));
+
 	/* set the user */
 	if (oidc_get_remote_user(r, c, provider, jwt, &r->user) == TRUE) {
 
@@ -1192,19 +1235,14 @@ static int oidc_handle_authorization_response(request_rec *r, oidc_cfg *c,
 				apr_table_get(params, "id_token"), jwt, claims,
 				apr_table_get(params, "access_token"), expires_in,
 				apr_table_get(params, "refresh_token"),
-				apr_table_get(params, "session_state"));
+				apr_table_get(params, "session_state"),
+				apr_table_get(params, "state"), original_url);
 	} else {
 		oidc_error(r, "remote user could not be set");
 		return oidc_authorization_response_error(r, c, proto_state,
 				"Remote user could not be set: contact the website administrator",
 				NULL);
 	}
-
-	/* restore the original protected URL that the user was trying to access */
-	const char *original_url = apr_pstrdup(r->pool,
-			json_string_value(json_object_get(proto_state, "original_url")));
-	const char *original_method = apr_pstrdup(r->pool,
-			json_string_value(json_object_get(proto_state, "original_method")));
 
 	/* cleanup */
 	json_decref(proto_state);
@@ -1295,18 +1333,28 @@ static int oidc_discovery(request_rec *r, oidc_cfg *cfg) {
 	/* obtain the URL we're currently accessing, to be stored in the state/session */
 	char *current_url = oidc_get_current_url(r, cfg);
 
+	/* generate CSRF token */
+	char *csrf = NULL;
+	if (oidc_proto_generate_nonce(r, &csrf, 8) == FALSE)
+		return HTTP_INTERNAL_SERVER_ERROR;
+
 	/* see if there's an external discovery page configured */
 	if (dir_cfg->discover_url != NULL) {
 
 		/* yes, assemble the parameters for external discovery */
-		char *url = apr_psprintf(r->pool, "%s%s%s=%s&%s=%s", dir_cfg->discover_url,
+		char *url = apr_psprintf(r->pool, "%s%s%s=%s&%s=%s&%s=%s",
+				dir_cfg->discover_url,
 				strchr(dir_cfg->discover_url, '?') != NULL ? "&" : "?",
-				OIDC_DISC_RT_PARAM, oidc_util_escape_string(r, current_url),
-				OIDC_DISC_CB_PARAM,
-				oidc_util_escape_string(r, cfg->redirect_uri));
+						OIDC_DISC_RT_PARAM, oidc_util_escape_string(r, current_url),
+						OIDC_DISC_CB_PARAM,
+						oidc_util_escape_string(r, cfg->redirect_uri),
+						OIDC_CSRF_NAME, oidc_util_escape_string(r, csrf));
 
 		/* log what we're about to do */
 		oidc_debug(r, "redirecting to external discovery page: %s", url);
+
+		/* set CSRF cookie */
+		oidc_util_set_cookie(r, OIDC_CSRF_NAME, csrf, -1);
 
 		/* do the actual redirect to an external discovery page */
 		apr_table_add(r->headers_out, "Location", url);
@@ -1339,10 +1387,11 @@ static int oidc_discovery(request_rec *r, oidc_cfg *cfg) {
 		//if (p != NULL) *p = '\0';
 		/* point back to the redirect_uri, where the selection is handled, with an IDP selection and return_to URL */
 		s = apr_psprintf(r->pool,
-				"%s<p><a href=\"%s?%s=%s&amp;%s=%s\">%s</a></p>\n", s,
+				"%s<p><a href=\"%s?%s=%s&amp;%s=%s&amp;%s=%s\">%s</a></p>\n", s,
 				cfg->redirect_uri, OIDC_DISC_OP_PARAM,
 				oidc_util_escape_string(r, issuer), OIDC_DISC_RT_PARAM,
-				oidc_util_escape_string(r, current_url), display);
+				oidc_util_escape_string(r, current_url), OIDC_CSRF_NAME, csrf,
+				display);
 	}
 
 	/* add an option to enter an account or issuer name for dynamic OP discovery */
@@ -1351,6 +1400,9 @@ static int oidc_discovery(request_rec *r, oidc_cfg *cfg) {
 	s = apr_psprintf(r->pool,
 			"%s<p><input type=\"hidden\" name=\"%s\" value=\"%s\"><p>\n", s,
 			OIDC_DISC_RT_PARAM, current_url);
+	s = apr_psprintf(r->pool,
+			"%s<p><input type=\"hidden\" name=\"%s\" value=\"%s\"><p>\n", s,
+			OIDC_CSRF_NAME, csrf);
 	s =
 			apr_psprintf(r->pool,
 					"%s<p>Or enter your account name (eg. &quot;mike@seed.gluu.org&quot;, or an IDP identifier (eg. &quot;mitreid.org&quot;):</p>\n",
@@ -1361,6 +1413,8 @@ static int oidc_discovery(request_rec *r, oidc_cfg *cfg) {
 	s = apr_psprintf(r->pool,
 			"%s<p><input type=\"submit\" value=\"Submit\"></p>\n", s);
 	s = apr_psprintf(r->pool, "%s</form>\n", s);
+
+	oidc_util_set_cookie(r, OIDC_CSRF_NAME, csrf, -1);
 
 	/* now send the HTML contents to the user agent */
 	return oidc_util_html_send(r, "OpenID Connect Provider Discovery",
@@ -1391,7 +1445,7 @@ static int oidc_authenticate_user(request_rec *r, oidc_cfg *c,
 
 	/* generate the random nonce value that correlates requests and responses */
 	char *nonce = NULL;
-	if (oidc_proto_generate_nonce(r, &nonce) == FALSE)
+	if (oidc_proto_generate_nonce(r, &nonce, OIDC_PROTO_NONCE_LENGTH) == FALSE)
 		return HTTP_INTERNAL_SERVER_ERROR;
 
 	char *method = "get";
@@ -1546,7 +1600,7 @@ static int oidc_handle_discovery_response(request_rec *r, oidc_cfg *c) {
 
 	/* variables to hold the values returned in the response */
 	char *issuer = NULL, *target_link_uri = NULL, *login_hint = NULL,
-			*auth_request_params = NULL;
+			*auth_request_params = NULL, *csrf_cookie, *csrf_query = NULL;
 	oidc_provider_t *provider = NULL;
 
 	oidc_util_get_request_parameter(r, OIDC_DISC_OP_PARAM, &issuer);
@@ -1554,6 +1608,23 @@ static int oidc_handle_discovery_response(request_rec *r, oidc_cfg *c) {
 	oidc_util_get_request_parameter(r, OIDC_DISC_LH_PARAM, &login_hint);
 	oidc_util_get_request_parameter(r, OIDC_DISC_AR_PARAM,
 			&auth_request_params);
+	oidc_util_get_request_parameter(r, OIDC_CSRF_NAME, &csrf_query);
+	csrf_cookie = oidc_util_get_cookie(r, OIDC_CSRF_NAME);
+
+	/* do CSRF protection if not 3rd party initiated SSO */
+	if (csrf_cookie) {
+
+		/* clean CSRF cookie */
+		oidc_util_set_cookie(r, OIDC_CSRF_NAME, "", 0);
+
+		/* compare CSRF cookie value with query parameter value */
+		if ((csrf_query == NULL)
+				|| apr_strnatcmp(csrf_query, csrf_cookie) != 0) {
+			oidc_warn(r,
+					"CSRF protection failed, no Discovery and dynamic client registration will be allowed");
+			csrf_cookie = NULL;
+		}
+	}
 
 	// TODO: trim issuer/accountname/domain input and do more input validation
 
@@ -1611,7 +1682,7 @@ static int oidc_handle_discovery_response(request_rec *r, oidc_cfg *c) {
 		issuer[n - 1] = '\0';
 
 	/* try and get metadata from the metadata directories for the selected OP */
-	if ((oidc_metadata_get(r, c, issuer, &provider) == TRUE)
+	if ((oidc_metadata_get(r, c, issuer, &provider, csrf_cookie != NULL) == TRUE)
 			&& (provider != NULL)) {
 
 		/* now we've got a selected OP, send the user there to authenticate */
@@ -1634,9 +1705,8 @@ static apr_uint32_t oidc_transparent_pixel[17] = {
 };
 
 static apr_byte_t oidc_is_get_style_logout(const char *logout_param_value) {
-	return ((logout_param_value != NULL)
-			&& (apr_strnatcmp(logout_param_value,
-					OIDC_GET_STYLE_LOGOUT_PARAM_VALUE) == 0));
+	return ((logout_param_value != NULL) && (apr_strnatcmp(logout_param_value,
+			OIDC_GET_STYLE_LOGOUT_PARAM_VALUE) == 0));
 }
 
 /*
@@ -1654,10 +1724,29 @@ static int oidc_handle_logout_request(request_rec *r, oidc_cfg *c,
 		oidc_session_kill(r, session);
 	}
 
-	/* see if this is the OP calling us, in which case we return HTTP 200 and a transparent pixel */
-	if (oidc_is_get_style_logout(url))
-		return oidc_util_http_send(r, (const char *) &oidc_transparent_pixel,
-				sizeof(oidc_transparent_pixel), "image/png", DONE);
+	/* see if this is the OP calling us */
+	if (oidc_is_get_style_logout(url)) {
+
+		/* set recommended cache control headers */
+		apr_table_add(r->err_headers_out, "Cache-Control",
+				"no-cache, no-store");
+		apr_table_add(r->err_headers_out, "Pragma", "no-cache");
+		apr_table_add(r->err_headers_out, "P3P", "CAO PSA OUR");
+		apr_table_add(r->err_headers_out, "Expires", "0");
+		apr_table_add(r->err_headers_out, "X-Frame-Options", "DENY");
+
+		/* see if this is PF-PA style logout in which case we return a transparent pixel */
+		const char *accept = apr_table_get(r->headers_in, "Accept");
+		if ((accept) && strstr(accept, "image/png")) {
+			return oidc_util_http_send(r,
+					(const char *) &oidc_transparent_pixel,
+					sizeof(oidc_transparent_pixel), "image/png", DONE);
+		}
+
+		/* standard HTTP based logout: should be called in an iframe from the OP */
+		return oidc_util_html_send(r, "Logged Out", NULL, NULL,
+				"<p>Logged Out</p>", DONE);
+	}
 
 	/* see if we don't need to go somewhere special after killing the session locally */
 	if (url == NULL)
@@ -1937,7 +2026,7 @@ static int oidc_handle_session_management(request_rec *r, oidc_cfg *c,
 		oidc_session_get(r, session, OIDC_IDTOKEN_SESSION_KEY, &id_token_hint);
 		oidc_session_get(r, session, OIDC_ISSUER_SESSION_KEY, &issuer);
 		if (issuer != NULL)
-			provider = oidc_get_provider_for_issuer(r, c, issuer);
+			provider = oidc_get_provider_for_issuer(r, c, issuer, FALSE);
 		if ((id_token_hint != NULL) && (provider != NULL)) {
 			return oidc_authenticate_user(r, c, provider,
 					apr_psprintf(r->pool, "%s?session=iframe_rp",
@@ -2020,7 +2109,7 @@ static int oidc_handle_refresh_token_request(request_rec *r, oidc_cfg *c,
 		error_code = "session_corruption";
 		goto end;
 	}
-	provider = oidc_get_provider_for_issuer(r, c, issuer);
+	provider = oidc_get_provider_for_issuer(r, c, issuer, FALSE);
 	if (provider == NULL) {
 		oidc_error(r, "session corrupted: no provider found for issuer: %s",
 				issuer);
@@ -2061,7 +2150,7 @@ end:
 	if (error_code != NULL)
 		return_to = apr_psprintf(r->pool, "%s%serror_code=%s", return_to,
 				strchr(return_to, '?') ? "&" : "?",
-				oidc_util_escape_string(r, error_code));
+						oidc_util_escape_string(r, error_code));
 
 	/* add the redirect location header */
 	apr_table_add(r->headers_out, "Location", return_to);

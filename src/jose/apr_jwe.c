@@ -65,10 +65,12 @@
  * return all supported content encryption key algorithms
  */
 apr_array_header_t *apr_jwe_supported_algorithms(apr_pool_t *pool) {
-	apr_array_header_t *result = apr_array_make(pool, 3, sizeof(const char*));
+	apr_array_header_t *result = apr_array_make(pool, 4, sizeof(const char*));
 	*(const char**) apr_array_push(result) = "RSA1_5";
 	*(const char**) apr_array_push(result) = "A128KW";
+	*(const char**) apr_array_push(result) = "A192KW";
 	*(const char**) apr_array_push(result) = "A256KW";
+	*(const char**) apr_array_push(result) = "RSA-OAEP";
 	return result;
 }
 
@@ -83,9 +85,15 @@ apr_byte_t apr_jwe_algorithm_is_supported(apr_pool_t *pool, const char *alg) {
  * return all supported encryption algorithms
  */
 apr_array_header_t *apr_jwe_supported_encryptions(apr_pool_t *pool) {
-	apr_array_header_t *result = apr_array_make(pool, 3, sizeof(const char*));
+	apr_array_header_t *result = apr_array_make(pool, 5, sizeof(const char*));
 	*(const char**) apr_array_push(result) = "A128CBC-HS256";
+	*(const char**) apr_array_push(result) = "A192CBC-HS384";
 	*(const char**) apr_array_push(result) = "A256CBC-HS512";
+#if (OPENSSL_VERSION_NUMBER >= 0x1000100f)
+	*(const char**) apr_array_push(result) = "A128GCM";
+	*(const char**) apr_array_push(result) = "A192GCM";
+	*(const char**) apr_array_push(result) = "A256GCM";
+#endif
 	return result;
 }
 
@@ -111,9 +119,23 @@ static const EVP_CIPHER *apr_jwe_enc_to_openssl_cipher(const char *enc) {
 	if (apr_strnatcmp(enc, "A128CBC-HS256") == 0) {
 		return EVP_aes_128_cbc();
 	}
+	if (apr_strnatcmp(enc, "A192CBC-HS384") == 0) {
+		return EVP_aes_192_cbc();
+	}
 	if (apr_strnatcmp(enc, "A256CBC-HS512") == 0) {
 		return EVP_aes_256_cbc();
 	}
+#if (OPENSSL_VERSION_NUMBER >= 0x1000100f)
+	if (apr_strnatcmp(enc, "A128CM") == 0) {
+		return EVP_aes_128_gcm();
+	}
+	if (apr_strnatcmp(enc, "A192GCM") == 0) {
+		return EVP_aes_192_gcm();
+	}
+	if (apr_strnatcmp(enc, "A256GCM") == 0) {
+		return EVP_aes_256_gcm();
+	}
+#endif
 	return NULL;
 }
 
@@ -123,6 +145,9 @@ static const EVP_CIPHER *apr_jwe_enc_to_openssl_cipher(const char *enc) {
 static const EVP_MD *apr_jwe_enc_to_openssl_hash(const char *enc) {
 	if (apr_strnatcmp(enc, "A128CBC-HS256") == 0) {
 		return EVP_sha256();
+	}
+	if (apr_strnatcmp(enc, "A192CBC-HS384") == 0) {
+		return EVP_sha384();
 	}
 	if (apr_strnatcmp(enc, "A256CBC-HS512") == 0) {
 		return EVP_sha512();
@@ -195,7 +220,7 @@ static apr_array_header_t *apr_jwe_unpacked_base64url_decode(apr_pool_t *pool,
 /*
  * decrypt RSA encrypted Content Encryption Key
  */
-static apr_byte_t apr_jwe_decrypt_cek_rsa(apr_pool_t *pool,
+static apr_byte_t apr_jwe_decrypt_cek_rsa(apr_pool_t *pool, int padding,
 		apr_jwt_header_t *header, apr_array_header_t *unpacked_decoded,
 		apr_jwk_t *jwk_rsa, unsigned char **cek, int *cek_len,
 		apr_jwt_error_t *err) {
@@ -211,8 +236,7 @@ static apr_byte_t apr_jwe_decrypt_cek_rsa(apr_pool_t *pool,
 			((apr_jwe_unpacked_t **) unpacked_decoded->elts)[APR_JWE_ENCRYPTED_KEY_INDEX];
 	*cek = apr_pcalloc(pool, RSA_size(pkey));
 	*cek_len = RSA_private_decrypt(encrypted_key->len,
-			(const unsigned char *) encrypted_key->value, *cek, pkey,
-			RSA_PKCS1_PADDING);
+			(const unsigned char *) encrypted_key->value, *cek, pkey, padding);
 	if (*cek_len <= 0)
 		apr_jwt_error_openssl(err, "RSA_private_decrypt");
 
@@ -232,7 +256,10 @@ static apr_byte_t apr_jwe_decrypt_cek_oct_aes(apr_pool_t *pool,
 		unsigned char **cek, int *cek_len, apr_jwt_error_t *err) {
 
 	/* determine key length in bits */
-	int key_bits_len = (apr_strnatcmp(header->alg, "A128KW") == 0) ? 128 : 256;
+	int key_bits_len = 0;
+	if (apr_strnatcmp(header->alg, "A128KW") == 0) key_bits_len = 128;
+	if (apr_strnatcmp(header->alg, "A192KW") == 0) key_bits_len = 192;
+	if (apr_strnatcmp(header->alg, "A256KW") == 0) key_bits_len = 256;
 
 	if (shared_key_len * 8 < key_bits_len) {
 		apr_jwt_error(err,
@@ -281,16 +308,24 @@ static apr_byte_t apr_jwe_decrypt_cek_with_jwk(apr_pool_t *pool,
 	if (apr_strnatcmp(header->alg, "RSA1_5") == 0) {
 
 		rc = (jwk->type == APR_JWK_KEY_RSA)
-				&& apr_jwe_decrypt_cek_rsa(pool, header, unpacked_decoded, jwk,
-						cek, cek_len, err);
+				&& apr_jwe_decrypt_cek_rsa(pool, RSA_PKCS1_PADDING, header,
+						unpacked_decoded, jwk, cek, cek_len, err);
 
 	} else if ((apr_strnatcmp(header->alg, "A128KW") == 0)
+			|| (apr_strnatcmp(header->alg, "A192KW") == 0)
 			|| (apr_strnatcmp(header->alg, "A256KW") == 0)) {
 
 		rc = (jwk->type == APR_JWK_KEY_OCT)
 				&& apr_jwe_decrypt_cek_oct_aes(pool, header, unpacked_decoded,
 						jwk->key.oct->k, jwk->key.oct->k_len, cek, cek_len,
 						err);
+
+	} else if (apr_strnatcmp(header->alg, "RSA-OAEP") == 0) {
+
+		rc = (jwk->type == APR_JWK_KEY_RSA)
+				&& apr_jwe_decrypt_cek_rsa(pool, RSA_PKCS1_OAEP_PADDING, header,
+						unpacked_decoded, jwk, cek, cek_len, err);
+
 	}
 
 	return rc;
@@ -334,6 +369,155 @@ static apr_byte_t apr_jwe_decrypt_cek(apr_pool_t *pool,
 	}
 
 	return rc;
+}
+
+#if (OPENSSL_VERSION_NUMBER >= 0x1000100f)
+/*
+ * Decrypt AES-GCM content
+ */
+apr_byte_t apr_jwe_decrypt_content_aesgcm(apr_pool_t *pool,
+		apr_jwt_header_t *header, apr_jwe_unpacked_t *cipher_text,
+		unsigned char *cek, int cek_len, apr_jwe_unpacked_t *iv, char *aad,
+		int aad_len, apr_jwe_unpacked_t *tag, char **decrypted,
+		apr_jwt_error_t *err) {
+
+	EVP_CIPHER_CTX *ctx;
+	int outlen, rv;
+
+	ctx = EVP_CIPHER_CTX_new();
+	if (!EVP_DecryptInit_ex(ctx, apr_jwe_enc_to_openssl_cipher(header->enc),
+			NULL, NULL, NULL)) {
+		apr_jwt_error_openssl(err, "EVP_DecryptInit_ex (aes-gcm)");
+		return FALSE;
+	}
+
+	unsigned char *plaintext = apr_palloc(pool,
+			cipher_text->len
+			+ EVP_CIPHER_block_size(
+					apr_jwe_enc_to_openssl_cipher(header->enc)));
+
+	/* set IV length, omit for 96 bits */
+	//EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, sizeof(gcm_iv), NULL);
+	// TODO: check cek_len == ??
+	// TODO: check iv->len == 96 bits
+	/* specify key and IV */
+	if (!EVP_DecryptInit_ex(ctx, NULL, NULL, cek,
+			(unsigned char *) iv->value)) {
+		apr_jwt_error_openssl(err, "EVP_DecryptInit_ex (iv)");
+		return FALSE;
+	}
+	/* zero or more calls to specify any AAD */
+	if (!EVP_DecryptUpdate(ctx, NULL, &outlen, (unsigned char *) aad,
+			aad_len)) {
+		apr_jwt_error_openssl(err, "EVP_DecryptUpdate (aad)");
+		return FALSE;
+	}
+	/* decrypt plaintext */
+	if (!EVP_DecryptUpdate(ctx, plaintext, &outlen,
+			(unsigned char *) cipher_text->value, cipher_text->len)) {
+		apr_jwt_error_openssl(err, "EVP_DecryptUpdate (ciphertext)");
+		return FALSE;
+	}
+	/* set expected tag value. */
+	if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, tag->len, tag->value)) {
+		apr_jwt_error_openssl(err, "EVP_CIPHER_CTX_ctrl");
+		return FALSE;
+	}
+
+	/* finalise: note get no output for GCM */
+	rv = EVP_DecryptFinal_ex(ctx, plaintext, &outlen);
+
+	EVP_CIPHER_CTX_free(ctx);
+
+	if (rv > 0) {
+		*decrypted = (char *) plaintext;
+		return TRUE;
+	}
+
+	apr_jwt_error_openssl(err, "EVP_DecryptFinal_ex");
+
+	return FALSE;
+}
+#endif
+
+/*
+ * Decrypt A128CBC-HS256, A192CBC-HS384 and A256CBC-HS512 content
+ */
+apr_byte_t apr_jwe_decrypt_content_aescbc(apr_pool_t *pool,
+		apr_jwt_header_t *header, const unsigned char *msg, int msg_len,
+		apr_jwe_unpacked_t *cipher_text, unsigned char *cek, int cek_len,
+		apr_jwe_unpacked_t *iv, char *aad, int aad_len,
+		apr_jwe_unpacked_t *auth_tag, char **decrypted, apr_jwt_error_t *err) {
+
+	/* extract MAC key from CEK: second half of CEK bits */
+	unsigned char *mac_key = apr_pcalloc(pool, cek_len / 2);
+	memcpy(mac_key, cek, cek_len / 2);
+	/* extract encryption key from CEK: first half of CEK bits */
+	unsigned char *enc_key = apr_pcalloc(pool, cek_len / 2);
+	memcpy(enc_key, cek + cek_len / 2, cek_len / 2);
+
+	/* calculate the Authentication Tag value over AAD + IV + ciphertext + AAD length */
+	unsigned int md_len = 0;
+	unsigned char md[EVP_MAX_MD_SIZE];
+	if (!HMAC(apr_jwe_enc_to_openssl_hash(header->enc), mac_key, cek_len / 2,
+			msg, msg_len, md, &md_len)) {
+		apr_jwt_error_openssl(err, "Authentication Tag calculation HMAC");
+		return FALSE;
+	}
+	/* use only the first half of the bits */
+	md_len = md_len / 2;
+
+	/* verify the provided Authentication Tag against what we've calculated ourselves */
+	if (md_len != auth_tag->len) {
+		apr_jwt_error(err,
+				"calculated Authentication Tag hash length differs from the length of the Authentication Tag length in the encrypted JWT");
+		return FALSE;
+	}
+
+	if (apr_jwt_memcmp(md, auth_tag->value, md_len) == FALSE) {
+		apr_jwt_error(err,
+				"calculated Authentication Tag hash differs from the Authentication Tag in the encrypted JWT");
+		return FALSE;
+	}
+
+	/* if everything still OK, now AES (128/192/256) decrypt the ciphertext */
+
+	int p_len = cipher_text->len, f_len = 0;
+	/* allocate ciphertext length + one block padding for plaintext */
+	unsigned char *plaintext = apr_palloc(pool, p_len + AES_BLOCK_SIZE);
+
+	/* initialize decryption context */
+	EVP_CIPHER_CTX decrypt_ctx;
+	EVP_CIPHER_CTX_init(&decrypt_ctx);
+	/* pass the extracted encryption key and Initialization Vector */
+	if (!EVP_DecryptInit_ex(&decrypt_ctx,
+			apr_jwe_enc_to_openssl_cipher(header->enc), NULL, enc_key,
+			(const unsigned char *) iv->value)) {
+		apr_jwt_error_openssl(err, "EVP_DecryptInit_ex");
+		return FALSE;
+	}
+
+	/* decrypt the ciphertext in to the plaintext */
+	if (!EVP_DecryptUpdate(&decrypt_ctx, plaintext, &p_len,
+			(const unsigned char *) cipher_text->value, cipher_text->len)) {
+		apr_jwt_error_openssl(err, "EVP_DecryptUpdate");
+		return FALSE;
+	}
+
+	/* decrypt the remaining bits/padding */
+	if (!EVP_DecryptFinal_ex(&decrypt_ctx, plaintext + p_len, &f_len)) {
+		apr_jwt_error_openssl(err, "EVP_DecryptFinal_ex");
+		return FALSE;
+	}
+
+	plaintext[p_len + f_len] = '\0';
+	*decrypted = (char *) plaintext;
+
+	/* cleanup */
+	EVP_CIPHER_CTX_cleanup(&decrypt_ctx);
+
+	/* if we got here, all must be fine */
+	return TRUE;
 }
 
 static unsigned char *apr_jwe_cek_dummy =
@@ -381,13 +565,6 @@ apr_byte_t apr_jwe_decrypt_jwt(apr_pool_t *pool, apr_jwt_header_t *header,
 	apr_jwe_unpacked_t *auth_tag = APR_ARRAY_IDX(unpacked_decoded,
 			APR_JWE_AUTHENTICATION_TAG_INDEX, apr_jwe_unpacked_t *);
 
-	/* extract MAC key from CEK: second half of CEK bits */
-	unsigned char *mac_key = apr_pcalloc(pool, cek_len / 2);
-	memcpy(mac_key, cek, cek_len / 2);
-	/* extract encryption key from CEK: first half of CEK bits */
-	unsigned char *enc_key = apr_pcalloc(pool, cek_len / 2);
-	memcpy(enc_key, cek + cek_len / 2, cek_len / 2);
-
 	/* determine the Additional Authentication Data: the protected JSON header */
 	char *aad = NULL;
 	if (apr_jwt_base64url_encode(pool, &aad, (const char *) header->value.str,
@@ -421,66 +598,26 @@ apr_byte_t apr_jwe_decrypt_jwt(apr_pool_t *pool, apr_jwt_header_t *header,
 	}
 	memcpy(p, &al, sizeof(uint64_t));
 
-	/* calculate the Authentication Tag value over AAD + IV + ciphertext + AAD length */
-	unsigned int md_len = 0;
-	unsigned char md[EVP_MAX_MD_SIZE];
-	if (!HMAC(apr_jwe_enc_to_openssl_hash(header->enc), mac_key, cek_len / 2,
-			msg, msg_len, md, &md_len)) {
-		apr_jwt_error_openssl(err, "Authentication Tag calculation HMAC");
-		return FALSE;
-	}
-	/* use only the first half of the bits */
-	md_len = md_len / 2;
+	if ((apr_strnatcmp(header->enc, "A128CBC-HS256") == 0)
+			|| (apr_strnatcmp(header->enc, "A192CBC-HS384") == 0)
+			|| (apr_strnatcmp(header->enc, "A256CBC-HS512") == 0)) {
 
-	/* verify the provided Authentication Tag against what we've calculated ourselves */
-	if (md_len != auth_tag->len) {
-		apr_jwt_error(err,
-				"calculated Authentication Tag hash length differs from the length of the Authentication Tag length in the encrypted JWT");
-		return FALSE;
-	}
+		return apr_jwe_decrypt_content_aescbc(pool, header, msg, msg_len,
+				cipher_text, cek, cek_len, iv, aad, aad_len, auth_tag,
+				decrypted, err_r);
 
-	if (apr_jwt_memcmp(md, auth_tag->value, md_len) == FALSE) {
-		apr_jwt_error(err,
-				"calculated Authentication Tag hash differs from the Authentication Tag in the encrypted JWT");
-		return FALSE;
+#if (OPENSSL_VERSION_NUMBER >= 0x1000100f)
+
+	} else if ((apr_strnatcmp(header->enc, "A128GCM") == 0)
+			|| (apr_strnatcmp(header->enc, "A192GCM") == 0)
+			|| (apr_strnatcmp(header->enc, "A256GCM") == 0)) {
+
+		return apr_jwe_decrypt_content_aesgcm(pool, header, cipher_text, cek,
+				cek_len, iv, aad, aad_len, auth_tag, decrypted, err_r);
+
+#endif
+
 	}
 
-	/* if everything still OK, now AES (128/256) decrypt the ciphertext */
-
-	int p_len = cipher_text->len, f_len = 0;
-	/* allocate ciphertext length + one block padding for plaintext */
-	unsigned char *plaintext = apr_palloc(pool, p_len + AES_BLOCK_SIZE);
-
-	/* initialize decryption context */
-	EVP_CIPHER_CTX decrypt_ctx;
-	EVP_CIPHER_CTX_init(&decrypt_ctx);
-	/* pass the extracted encryption key and Initialization Vector */
-	if (!EVP_DecryptInit_ex(&decrypt_ctx,
-			apr_jwe_enc_to_openssl_cipher(header->enc), NULL, enc_key,
-			(const unsigned char *) iv->value)) {
-		apr_jwt_error_openssl(err, "EVP_DecryptInit_ex");
-		return FALSE;
-	}
-
-	/* decrypt the ciphertext in to the plaintext */
-	if (!EVP_DecryptUpdate(&decrypt_ctx, plaintext, &p_len,
-			(const unsigned char *) cipher_text->value, cipher_text->len)) {
-		apr_jwt_error_openssl(err, "EVP_DecryptUpdate");
-		return FALSE;
-	}
-
-	/* decrypt the remaining bits/padding */
-	if (!EVP_DecryptFinal_ex(&decrypt_ctx, plaintext + p_len, &f_len)) {
-		apr_jwt_error_openssl(err, "EVP_DecryptFinal_ex");
-		return FALSE;
-	}
-
-	plaintext[p_len + f_len] = '\0';
-	*decrypted = (char *) plaintext;
-
-	/* cleanup */
-	EVP_CIPHER_CTX_cleanup(&decrypt_ctx);
-
-	/* if we got here, all must be fine */
-	return TRUE;
+	return FALSE;
 }
