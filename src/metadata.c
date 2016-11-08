@@ -18,7 +18,7 @@
  */
 
 /***************************************************************************
- * Copyright (C) 2013-2015 Ping Identity Corporation
+ * Copyright (C) 2013-2016 Ping Identity Corporation
  * All rights reserved.
  *
  * For further information please contact:
@@ -59,6 +59,7 @@
 #include <http_log.h>
 
 #include "mod_auth_openidc.h"
+#include "parse.h"
 
 extern module AP_MODULE_DECLARE_DATA auth_openidc_module;
 
@@ -160,65 +161,39 @@ static apr_byte_t oidc_metadata_file_read_json(request_rec *r, const char *path,
 	char *buf = NULL;
 
 	/* read the file contents */
-	if (oidc_util_file_read(r, path, &buf) == FALSE)
+	if (oidc_util_file_read(r, path, r->pool, &buf) == FALSE)
 		return FALSE;
 
 	/* decode the JSON contents of the buffer */
-	json_error_t json_error;
-	*result = json_loads(buf, 0, &json_error);
-
-	if (*result == NULL) {
-		/* something went wrong */
-		oidc_error(r, "JSON parsing (%s) returned an error: %s", path,
-				json_error.text);
-		return FALSE;
-	}
-
-	if (!json_is_object(*result)) {
-		/* oops, no JSON */
-		oidc_error(r, "parsed JSON from (%s) did not contain a JSON object",
-				path);
-		json_decref(*result);
-		return FALSE;
-	}
-
-	return TRUE;
+	return oidc_util_decode_json_object(r, buf, result);
 }
 
 /*
  * check if the specified entry in metadata is a valid URI
  */
 static apr_byte_t oidc_metadata_is_valid_uri(request_rec *r, const char *type,
-		const char *issuer, const json_t *json, const char *key,
+		const char *issuer, json_t *json, const char *key, char **value,
 		apr_byte_t is_mandatory) {
 
-	apr_uri_t uri;
-	json_t *entry = NULL;
+	char *s_value = NULL;
+	oidc_json_object_get_string(r->pool, json, key, &s_value, NULL);
 
-	entry = json_object_get(json, key);
-
-	if (entry == NULL) {
+	if (s_value == NULL) {
 		if (is_mandatory) {
 			oidc_error(r,
-					"%s (%s) JSON metadata does not contain the mandatory \"%s\" entry",
+					"%s (%s) JSON metadata does not contain the mandatory \"%s\" string entry",
 					type, issuer, key);
 		}
 		return (!is_mandatory);
 	}
 
-	if (!json_is_string(entry)) {
-		oidc_error(r,
-				"%s (%s) JSON metadata contains a \"%s\" entry, but it is not a string value",
-				type, issuer, key);
+	if (oidc_valid_http_url(r->pool, s_value) != NULL) {
+		oidc_warn(r, "\"%s\" is not a valid http URL for key \"%s\"", s_value, key);
 		return FALSE;
 	}
 
-	if (apr_uri_parse(r->pool, json_string_value(entry), &uri) != APR_SUCCESS) {
-		oidc_error(r,
-				"%s (%s) JSON metadata contains a \"%s\" entry, but it is not a valid URI",
-				type, issuer, key);
-		return FALSE;
-	}
+	if (value)
+		*value = s_value;
 
 	return TRUE;
 }
@@ -226,12 +201,13 @@ static apr_byte_t oidc_metadata_is_valid_uri(request_rec *r, const char *type,
 /*
  * check to see if JSON provider metadata is valid
  */
-static apr_byte_t oidc_metadata_provider_is_valid(request_rec *r,
+static apr_byte_t oidc_metadata_provider_is_valid(request_rec *r, oidc_cfg *cfg,
 		json_t *j_provider, const char *issuer) {
 
 	/* get the "issuer" from the provider metadata and double-check that it matches what we looked for */
-	json_t *j_issuer = json_object_get(j_provider, "issuer");
-	if ((j_issuer == NULL) || (!json_is_string(j_issuer))) {
+	char *s_issuer = NULL;
+	oidc_json_object_get_string(r->pool, j_provider, "issuer", &s_issuer, NULL);
+	if (s_issuer == NULL) {
 		oidc_error(r,
 				"provider (%s) JSON metadata did not contain an \"issuer\" string",
 				issuer);
@@ -240,129 +216,68 @@ static apr_byte_t oidc_metadata_provider_is_valid(request_rec *r,
 
 	/* check that the issuer matches */
 	if (issuer != NULL) {
-		if (oidc_util_issuer_match(issuer, json_string_value(j_issuer)) == FALSE) {
-			oidc_warn(r,
+		if (oidc_util_issuer_match(issuer, s_issuer) == FALSE) {
+			oidc_error(r,
 					"requested issuer (%s) does not match the \"issuer\" value in the provider metadata file: %s",
-					issuer, json_string_value(j_issuer));
-			//return FALSE;
+					issuer, s_issuer);
+			return FALSE;
 		}
 	}
 
 	/* verify that the provider supports the a flow that we implement */
-	json_t *j_response_types_supported = json_object_get(j_provider,
-			"response_types_supported");
-	if ((j_response_types_supported != NULL)
-			&& (json_is_array(j_response_types_supported))) {
-		int i = 0;
-		for (i = 0; i < json_array_size(j_response_types_supported); i++) {
-			json_t *elem = json_array_get(j_response_types_supported, i);
-			if (!json_is_string(elem)) {
-				oidc_error(r,
-						"unhandled in-array JSON non-string object type [%d]",
-						elem->type);
-				continue;
-			}
-			if (oidc_proto_flow_is_supported(r->pool, json_string_value(elem)))
-				break;
-		}
-		if (i == json_array_size(j_response_types_supported)) {
-			oidc_warn(r,
-					"could not find a supported response type in provider metadata (%s) for entry \"response_types_supported\"; assuming that \"code\" flow is supported...",
-					issuer);
-			//return FALSE;
-		}
-	} else {
-		oidc_warn(r,
-				"provider (%s) JSON metadata did not contain a \"response_types_supported\" array; assuming that \"code\" flow is supported...",
-				issuer);
-		// TODO: hey, this is required-by-spec stuff right?
-	}
-
-	/* verify that the provider supports a response_mode that we implement */
-	json_t *response_modes_supported = json_object_get(j_provider,
-			"response_modes_supported");
-	if ((response_modes_supported != NULL)
-			&& (json_is_array(response_modes_supported))) {
-		int i = 0;
-		for (i = 0; i < json_array_size(response_modes_supported); i++) {
-			json_t *elem = json_array_get(response_modes_supported, i);
-			if (!json_is_string(elem)) {
-				oidc_error(r,
-						"unhandled in-array JSON non-string object type [%d]",
-						elem->type);
-				continue;
-			}
-			if ((apr_strnatcmp(json_string_value(elem), "fragment") == 0)
-					|| (apr_strnatcmp(json_string_value(elem), "query") == 0)
-					|| (apr_strnatcmp(json_string_value(elem), "form_post") == 0))
-				break;
-		}
-		if (i == json_array_size(response_modes_supported)) {
-			oidc_warn(r,
-					"could not find a supported response mode in provider metadata (%s) for entry \"response_modes_supported\"",
+	if (oidc_valid_string_in_array(r->pool, j_provider,
+			"response_types_supported", oidc_valid_response_type, NULL,
+			FALSE) != NULL) {
+		if (json_object_get(j_provider, "response_types_supported") != NULL) {
+			oidc_error(r,
+					"could not find a supported response type in provider metadata (%s) for entry \"response_types_supported\"",
 					issuer);
 			return FALSE;
 		}
-	} else {
-		oidc_debug(r,
-				"provider (%s) JSON metadata did not contain a \"response_modes_supported\" array; assuming that \"fragment\" and \"query\" are supported",
+		oidc_warn(r,
+				"could not find (required) supported response types  (\"response_types_supported\") in provider metadata (%s); assuming that \"code\" flow is supported...",
 				issuer);
+	}
+
+	/* verify that the provider supports a response_mode that we implement */
+	if (oidc_valid_string_in_array(r->pool, j_provider,
+			"response_modes_supported", oidc_valid_response_mode, NULL,
+			TRUE) != NULL) {
+		oidc_error(r,
+				"could not find a supported response mode in provider metadata (%s) for entry \"response_modes_supported\"",
+				issuer);
+		return FALSE;
 	}
 
 	/* check the required authorization endpoint */
 	if (oidc_metadata_is_valid_uri(r, "provider", issuer, j_provider,
-			"authorization_endpoint", TRUE) == FALSE)
+			"authorization_endpoint", NULL, TRUE) == FALSE)
 		return FALSE;
 
 	/* check the optional token endpoint */
 	if (oidc_metadata_is_valid_uri(r, "provider", issuer, j_provider,
-			"token_endpoint", FALSE) == FALSE)
+			"token_endpoint", NULL, FALSE) == FALSE)
 		return FALSE;
 
 	/* check the optional user info endpoint */
 	if (oidc_metadata_is_valid_uri(r, "provider", issuer, j_provider,
-			"userinfo_endpoint", FALSE) == FALSE)
+			"userinfo_endpoint", NULL, FALSE) == FALSE)
 		return FALSE;
 
 	/* check the optional JWKs URI */
 	if (oidc_metadata_is_valid_uri(r, "provider", issuer, j_provider,
-			"jwks_uri", FALSE) == FALSE)
+			"jwks_uri", NULL, FALSE) == FALSE)
 		return FALSE;
 
-	/* find out what type of authentication the token endpoint supports (we only support post or basic) */
-	json_t *j_token_endpoint_auth_methods_supported = json_object_get(
-			j_provider, "token_endpoint_auth_methods_supported");
-	if ((j_token_endpoint_auth_methods_supported == NULL)
-			|| (!json_is_array(j_token_endpoint_auth_methods_supported))) {
-		oidc_debug(r,
-				"provider (%s) JSON metadata did not contain a \"token_endpoint_auth_methods_supported\" array, assuming \"client_secret_basic\" is supported",
+	/* find out what type of authentication the token endpoint supports */
+	if (oidc_valid_string_in_array(r->pool, j_provider,
+			"token_endpoint_auth_methods_supported",
+			oidc_cfg_get_valid_endpoint_auth_function(cfg), NULL,
+			TRUE) != NULL) {
+		oidc_error(r,
+				"could not find a supported token endpoint authentication method in provider metadata (%s) for entry \"token_endpoint_auth_methods_supported\"",
 				issuer);
-	} else {
-		int i;
-		for (i = 0;
-				i < json_array_size(j_token_endpoint_auth_methods_supported);
-				i++) {
-			json_t *elem = json_array_get(
-					j_token_endpoint_auth_methods_supported, i);
-			if (!json_is_string(elem)) {
-				oidc_warn(r,
-						"unhandled in-array JSON object type [%d] in provider (%s) metadata for entry \"token_endpoint_auth_methods_supported\"",
-						elem->type, issuer);
-				continue;
-			}
-			if (strcmp(json_string_value(elem), "client_secret_post") == 0) {
-				break;
-			}
-			if (strcmp(json_string_value(elem), "client_secret_basic") == 0) {
-				break;
-			}
-		}
-		if (i == json_array_size(j_token_endpoint_auth_methods_supported)) {
-			oidc_error(r,
-					"could not find a supported value [client_secret_post|client_secret_basic] in provider (%s) metadata for entry \"token_endpoint_auth_methods_supported\"",
-					issuer);
-			return FALSE;
-		}
+		return FALSE;
 	}
 
 	return TRUE;
@@ -374,9 +289,12 @@ static apr_byte_t oidc_metadata_provider_is_valid(request_rec *r,
 static apr_byte_t oidc_metadata_client_is_valid(request_rec *r,
 		json_t *j_client, const char *issuer) {
 
+	char *str;
+
 	/* get a handle to the client_id we need to use for this provider */
-	json_t *j_client_id = json_object_get(j_client, "client_id");
-	if ((j_client_id == NULL) || (!json_is_string(j_client_id))) {
+	str = NULL;
+	oidc_json_object_get_string(r->pool, j_client, "client_id", &str, NULL);
+	if (str == NULL) {
 		oidc_error(r,
 				"client (%s) JSON metadata did not contain a \"client_id\" string",
 				issuer);
@@ -384,12 +302,12 @@ static apr_byte_t oidc_metadata_client_is_valid(request_rec *r,
 	}
 
 	/* get a handle to the client_secret we need to use for this provider */
-	json_t *j_client_secret = json_object_get(j_client, "client_secret");
-	if ((j_client_secret == NULL) || (!json_is_string(j_client_secret))) {
+	str = NULL;
+	oidc_json_object_get_string(r->pool, j_client, "client_secret", &str, NULL);
+	if (str == NULL) {
 		oidc_warn(r,
 				"client (%s) JSON metadata did not contain a \"client_secret\" string",
 				issuer);
-		//return FALSE;
 	}
 
 	/* the expiry timestamp from the JSON object */
@@ -442,24 +360,18 @@ static apr_byte_t oidc_metadata_jwks_is_valid(request_rec *r,
  */
 static apr_byte_t oidc_metadata_conf_jose_is_supported(request_rec *r,
 		json_t *j_conf, const char *issuer, const char *key,
-		apr_jose_is_supported_function_t jose_is_supported_function) {
-	json_t *value = json_object_get(j_conf, key);
-	if (value != NULL) {
-		if (!json_is_string(value)) {
-			oidc_error(r,
-					"(%s) JSON conf data has \"%s\" entry but it is not a string",
-					issuer, key);
-			return FALSE;
-		}
-		if (jose_is_supported_function(r->pool,
-				json_string_value(value)) == FALSE) {
-			oidc_error(r,
-					"(%s) JSON conf data has \"%s\" entry but it contains an unsupported algorithm or encryption type: \"%s\"",
-					issuer, key, json_string_value(value));
-			return FALSE;
-		}
+		oidc_valid_function_t valid_function) {
+	char *s_value = NULL;
+	oidc_json_object_get_string(r->pool, j_conf, key, &s_value, NULL);
+	if (s_value == NULL)
+		return TRUE;
+	const char *rv = valid_function(r->pool, s_value);
+	if (rv != NULL) {
+		oidc_error(r,
+				"(%s) JSON conf data has \"%s\" entry but it contains an unsupported algorithm or encryption type: \"%s\" (%s)",
+				issuer, key, s_value, rv);
+		return FALSE;
 	}
-
 	return TRUE;
 }
 
@@ -471,27 +383,27 @@ static apr_byte_t oidc_metadata_conf_is_valid(request_rec *r, json_t *j_conf,
 
 	if (oidc_metadata_conf_jose_is_supported(r, j_conf, issuer,
 			"id_token_signed_response_alg",
-			apr_jws_algorithm_is_supported) == FALSE)
+			oidc_valid_signed_response_alg) == FALSE)
 		return FALSE;
 	if (oidc_metadata_conf_jose_is_supported(r, j_conf, issuer,
 			"id_token_encrypted_response_alg",
-			apr_jwe_algorithm_is_supported) == FALSE)
+			oidc_valid_encrypted_response_alg) == FALSE)
 		return FALSE;
 	if (oidc_metadata_conf_jose_is_supported(r, j_conf, issuer,
 			"id_token_encrypted_response_enc",
-			apr_jwe_encryption_is_supported) == FALSE)
+			oidc_valid_encrypted_response_enc) == FALSE)
 		return FALSE;
 	if (oidc_metadata_conf_jose_is_supported(r, j_conf, issuer,
 			"userinfo_signed_response_alg",
-			apr_jws_algorithm_is_supported) == FALSE)
+			oidc_valid_signed_response_alg) == FALSE)
 		return FALSE;
 	if (oidc_metadata_conf_jose_is_supported(r, j_conf, issuer,
 			"userinfo_encrypted_response_alg",
-			apr_jwe_algorithm_is_supported) == FALSE)
+			oidc_valid_encrypted_response_alg) == FALSE)
 		return FALSE;
 	if (oidc_metadata_conf_jose_is_supported(r, j_conf, issuer,
 			"userinfo_encrypted_response_enc",
-			apr_jwe_encryption_is_supported) == FALSE)
+			oidc_valid_encrypted_response_enc) == FALSE)
 		return FALSE;
 
 	return TRUE;
@@ -503,15 +415,13 @@ static apr_byte_t oidc_metadata_conf_is_valid(request_rec *r, json_t *j_conf,
 static apr_byte_t oidc_metadata_file_write(request_rec *r, const char *path,
 		const char *data) {
 
-	// TODO: completely erase the contents of the file if it already exists....
-
 	apr_file_t *fd = NULL;
 	apr_status_t rc = APR_SUCCESS;
 	apr_size_t bytes_written = 0;
 	char s_err[128];
 
 	/* try to open the metadata file for writing, creating it if it does not exist */
-	if ((rc = apr_file_open(&fd, path, (APR_FOPEN_WRITE | APR_FOPEN_CREATE),
+	if ((rc = apr_file_open(&fd, path, (APR_FOPEN_WRITE | APR_FOPEN_CREATE | APR_FOPEN_TRUNCATE),
 			APR_OS_DEFAULT, r->pool)) != APR_SUCCESS) {
 		oidc_error(r, "file \"%s\" could not be opened (%s)", path,
 				apr_strerror(rc, s_err, sizeof(s_err)));
@@ -560,10 +470,6 @@ static apr_byte_t oidc_metadata_file_write(request_rec *r, const char *path,
 static apr_byte_t oidc_metadata_client_register(request_rec *r, oidc_cfg *cfg,
 		oidc_provider_t *provider, json_t **j_client, const char **response) {
 
-	/* get a handle to the directory config */
-	oidc_dir_cfg *dir_cfg = ap_get_module_config(r->per_dir_config,
-			&auth_openidc_module);
-
 	/* assemble the JSON registration request */
 	json_t *data = json_object();
 	json_object_set_new(data, "client_name",
@@ -579,6 +485,11 @@ static apr_byte_t oidc_metadata_client_register(request_rec *r, oidc_cfg *cfg,
 				json_string(((const char**) flows->elts)[i]));
 	}
 	json_object_set_new(data, "response_types", response_types);
+
+	if (provider->token_endpoint_auth != NULL) {
+		json_object_set_new(data, "token_endpoint_auth_method",
+				json_string(provider->token_endpoint_auth));
+	}
 
 	if (provider->client_contact != NULL) {
 		json_object_set_new(data, "contacts",
@@ -625,47 +536,30 @@ static apr_byte_t oidc_metadata_client_register(request_rec *r, oidc_cfg *cfg,
 			json_string(cfg->redirect_uri));
 
 	json_object_set_new(data, "logout_uri",
-			json_string(
-					apr_psprintf(r->pool, "%s?logout=%s", cfg->redirect_uri,
-							OIDC_GET_STYLE_LOGOUT_PARAM_VALUE)));
+			json_string(apr_psprintf(r->pool, "%s?logout=%s", cfg->redirect_uri,
+					OIDC_GET_STYLE_LOGOUT_PARAM_VALUE)));
 
 	if (cfg->default_slo_url != NULL) {
 		json_object_set_new(data, "post_logout_redirect_uris",
 				json_pack("[s]", cfg->default_slo_url));
 	}
 
+	/* add any custom JSON in to the registration request */
 	if (provider->registration_endpoint_json != NULL) {
-
-		json_error_t json_error;
-		json_t *json = json_loads(provider->registration_endpoint_json, 0,
-				&json_error);
-
-		if (json == NULL) {
-
-			oidc_error(r, "JSON parsing returned an error: %s",
-					json_error.text);
-
-		} else {
-
-			if (!json_is_object(json)) {
-
-				oidc_error(r, "parsed JSON did not contain a JSON object");
-
-			} else {
-
-				oidc_util_json_merge(json, data);
-
-			}
-
-			json_decref(json);
-		}
+		json_t *json = NULL;
+		if (oidc_util_decode_json_object(r, provider->registration_endpoint_json,
+				&json) == FALSE)
+			return FALSE;
+		oidc_util_json_merge(json, data);
+		json_decref(json);
 	}
 
 	/* dynamically register the client with the specified parameters */
 	if (oidc_util_http_post_json(r, provider->registration_endpoint_url, data,
 			NULL, provider->registration_token, provider->ssl_validate_server, response,
 			cfg->http_timeout_short, cfg->outgoing_proxy,
-			dir_cfg->pass_cookies) == FALSE) {
+			oidc_dir_cfg_pass_cookies(r),
+			NULL, NULL) == FALSE) {
 		json_decref(data);
 		return FALSE;
 	}
@@ -689,14 +583,11 @@ static apr_byte_t oidc_metadata_jwks_retrieve_and_cache(request_rec *r,
 
 	const char *response = NULL;
 
-	/* get a handle to the directory config */
-	oidc_dir_cfg *dir_cfg = ap_get_module_config(r->per_dir_config,
-			&auth_openidc_module);
-
 	/* no valid provider metadata, get it at the specified URL with the specified parameters */
 	if (oidc_util_http_get(r, jwks_uri->url, NULL, NULL,
 			NULL, jwks_uri->ssl_validate_server, &response, cfg->http_timeout_long,
-			cfg->outgoing_proxy, dir_cfg->pass_cookies) == FALSE)
+			cfg->outgoing_proxy, oidc_dir_cfg_pass_cookies(r), NULL,
+			NULL) == FALSE)
 		return FALSE;
 
 	/* decode and see if it is not an error response somehow */
@@ -762,15 +653,12 @@ apr_byte_t oidc_metadata_provider_retrieve(request_rec *r, oidc_cfg *cfg,
 		const char *issuer, const char *url, json_t **j_metadata,
 		const char **response) {
 
-	/* get a handle to the directory config */
-	oidc_dir_cfg *dir_cfg = ap_get_module_config(r->per_dir_config,
-			&auth_openidc_module);
-
 	/* get provider metadata from the specified URL with the specified parameters */
 	if (oidc_util_http_get(r, url, NULL, NULL, NULL,
 			cfg->provider.ssl_validate_server, response,
 			cfg->http_timeout_short, cfg->outgoing_proxy,
-			dir_cfg->pass_cookies) == FALSE)
+			oidc_dir_cfg_pass_cookies(r),
+			NULL, NULL) == FALSE)
 		return FALSE;
 
 	/* decode and see if it is not an error response somehow */
@@ -780,7 +668,7 @@ apr_byte_t oidc_metadata_provider_retrieve(request_rec *r, oidc_cfg *cfg,
 	}
 
 	/* check to see if it is valid metadata */
-	if (oidc_metadata_provider_is_valid(r, *j_metadata, issuer) == FALSE)
+	if (oidc_metadata_provider_is_valid(r, cfg, *j_metadata, issuer) == FALSE)
 		return FALSE;
 
 	/* all OK */
@@ -800,21 +688,39 @@ static apr_byte_t oidc_metadata_provider_get(request_rec *r, oidc_cfg *cfg,
 	/* get the full file path to the provider metadata for this issuer */
 	const char *provider_path = oidc_metadata_provider_file_path(r, issuer);
 
-	/* see if we have valid metadata already, if so, return it */
-	if (oidc_metadata_file_read_json(r, provider_path, j_provider) == TRUE) {
+	/* check the last-modified timestamp */
+	apr_byte_t use_cache = TRUE;
+	apr_finfo_t fi;
+	json_t *j_cache = NULL;
+	apr_byte_t have_cache = FALSE;
 
-		/* return the validation result */
-		return oidc_metadata_provider_is_valid(r, *j_provider, issuer);
+	/* see if we are refreshing metadata and we need a refresh */
+	if (cfg->provider_metadata_refresh_interval > 0) {
+
+		have_cache = (apr_stat(&fi, provider_path, APR_FINFO_MTIME, r->pool) == APR_SUCCESS);
+
+		if (have_cache == TRUE)
+			use_cache = (apr_time_now() < fi.mtime	+ apr_time_from_sec(cfg->provider_metadata_refresh_interval));
+
+		oidc_debug(r, "use_cache: %s", use_cache ? "yes" : "no");
 	}
 
-	if (!allow_discovery) {
+	/* see if we have valid metadata already, if so, return it */
+	if (oidc_metadata_file_read_json(r, provider_path, &j_cache) == TRUE) {
+
+		/* return the validation result */
+		if (use_cache == TRUE) {
+			*j_provider = j_cache;
+			return oidc_metadata_provider_is_valid(r, cfg, *j_provider, issuer);
+		}
+	}
+
+	if ((have_cache == FALSE) && (!allow_discovery)) {
 		oidc_warn(r,
 				"no metadata found for the requested issuer (%s), and Discovery is not allowed",
 				issuer);
 		return FALSE;
 	}
-
-	// TODO: how to do validity/expiry checks on provider metadata
 
 	/* assemble the URL to the .well-known OpenID metadata */
 	const char *url = apr_psprintf(r->pool, "%s",
@@ -826,8 +732,25 @@ static apr_byte_t oidc_metadata_provider_get(request_rec *r, oidc_cfg *cfg,
 
 	/* get the metadata for the issuer using OpenID Connect Discovery and validate it */
 	if (oidc_metadata_provider_retrieve(r, cfg, issuer, url, j_provider,
-			&response) == FALSE)
+			&response) == FALSE) {
+
+		oidc_debug(r,
+				"could not retrieve provider metadata; have_cache: %s (data=%pp)",
+				have_cache ? "yes" : "no", j_cache);
+
+		/* see if we can use at least the cache that may have expired by now */
+		if ((cfg->provider_metadata_refresh_interval > 0) && (have_cache == TRUE) && (j_cache != NULL)) {
+
+			/* reset the file-modified timestamp so it is cached for a while again */
+			apr_file_mtime_set(provider_path, apr_time_now(), r->pool);
+
+			/* return the validated cached data */
+			*j_provider = j_cache;
+			return oidc_metadata_provider_is_valid(r, cfg, *j_provider, issuer);
+		}
+
 		return FALSE;
+	}
 
 	/* since it is valid, write the obtained provider metadata file */
 	if (oidc_metadata_file_write(r, provider_path, response) == FALSE)
@@ -923,7 +846,7 @@ apr_byte_t oidc_metadata_list(request_rec *r, oidc_cfg *cfg,
 	}
 
 	/* allocate some space in the array that will hold the list of providers */
-	*list = apr_array_make(r->pool, 5, sizeof(sizeof(const char*)));
+	*list = apr_array_make(r->pool, 5, sizeof(const char*));
 	/* BTW: we could estimate the number in the array based on # directory entries... */
 
 	/* loop over the entries in the provider metadata directory */
@@ -956,10 +879,43 @@ apr_byte_t oidc_metadata_list(request_rec *r, oidc_cfg *cfg,
 }
 
 /*
+ * parse boolean value from JSON configuration
+ */
+static void oidc_metadata_parse_boolean(request_rec *r, json_t *json,
+		const char *key, int *value, int default_value) {
+	int int_value = 0;
+	char *s_value = NULL;
+	oidc_json_object_get_string(r->pool, json, key, &s_value,
+			NULL);
+	if (s_value != NULL) {
+		const char *rv = oidc_parse_boolean(r->pool, s_value, &int_value);
+		if (rv != NULL) {
+			oidc_warn(r, "%s: %s", key, rv);
+			int_value = default_value;
+		}
+	} else {
+		oidc_json_object_get_int(r->pool, json, key, &int_value, default_value);
+	}
+	*value = (int_value != 0) ? TRUE : FALSE;
+}
+
+/*
+ * parse URL value from JSON configuration
+ */
+static void oidc_metadata_parse_url(request_rec *r, const char *type,
+		const char *issuer, json_t *json, const char *key, char **value,
+		const char *default_value) {
+	if ((oidc_metadata_is_valid_uri(r, type, issuer, json, key, value,
+			FALSE) == FALSE) || ((*value == NULL) && (default_value != NULL))) {
+		*value = apr_pstrdup(r->pool, default_value);
+	}
+}
+
+/*
  * parse the JSON provider metadata in to a oidc_provider_t struct but do not override values already set
  */
-apr_byte_t oidc_metadata_provider_parse(request_rec *r, json_t *j_provider,
-		oidc_provider_t *provider) {
+apr_byte_t oidc_metadata_provider_parse(request_rec *r, oidc_cfg *cfg,
+		json_t *j_provider, oidc_provider_t *provider) {
 
 	if (provider->issuer == NULL) {
 		/* get the "issuer" from the provider metadata */
@@ -969,91 +925,101 @@ apr_byte_t oidc_metadata_provider_parse(request_rec *r, json_t *j_provider,
 
 	if (provider->authorization_endpoint_url == NULL) {
 		/* get a handle to the authorization endpoint */
-		oidc_json_object_get_string(r->pool, j_provider,
+		oidc_metadata_parse_url(r, "provider", provider->issuer, j_provider,
 				"authorization_endpoint", &provider->authorization_endpoint_url,
 				NULL);
 	}
 
 	if (provider->token_endpoint_url == NULL) {
 		/* get a handle to the token endpoint */
-		oidc_json_object_get_string(r->pool, j_provider, "token_endpoint",
-				&provider->token_endpoint_url, NULL);
+		oidc_metadata_parse_url(r, "provider", provider->issuer, j_provider,
+				"token_endpoint", &provider->token_endpoint_url, NULL);
 	}
 
 	if (provider->userinfo_endpoint_url == NULL) {
 		/* get a handle to the user_info endpoint */
-		oidc_json_object_get_string(r->pool, j_provider, "userinfo_endpoint",
-				&provider->userinfo_endpoint_url, NULL);
+		oidc_metadata_parse_url(r, "provider", provider->issuer, j_provider,
+				"userinfo_endpoint", &provider->userinfo_endpoint_url, NULL);
 	}
 
 	if (provider->jwks_uri == NULL) {
 		/* get a handle to the jwks_uri endpoint */
-		oidc_json_object_get_string(r->pool, j_provider, "jwks_uri",
-				&provider->jwks_uri, NULL);
+		oidc_metadata_parse_url(r, "provider", provider->issuer, j_provider,
+				"jwks_uri", &provider->jwks_uri,
+				NULL);
 	}
 
 	if (provider->registration_endpoint_url == NULL) {
 		/* get a handle to the client registration endpoint */
-		oidc_json_object_get_string(r->pool, j_provider,
+		oidc_metadata_parse_url(r, "provider", provider->issuer, j_provider,
 				"registration_endpoint", &provider->registration_endpoint_url,
 				NULL);
 	}
 
 	if (provider->check_session_iframe == NULL) {
 		/* get a handle to the check session iframe */
-		oidc_json_object_get_string(r->pool, j_provider, "check_session_iframe",
-				&provider->check_session_iframe, NULL);
+		oidc_metadata_parse_url(r, "provider", provider->issuer, j_provider,
+				"check_session_iframe", &provider->check_session_iframe, NULL);
 	}
 
 	if (provider->end_session_endpoint == NULL) {
 		/* get a handle to the end session endpoint */
-		oidc_json_object_get_string(r->pool, j_provider, "end_session_endpoint",
-				&provider->end_session_endpoint, NULL);
+		oidc_metadata_parse_url(r, "provider", provider->issuer, j_provider,
+				"end_session_endpoint", &provider->end_session_endpoint, NULL);
 	}
 
 	if (provider->token_endpoint_auth == NULL) {
-
-		/* find a supported token_endpoint_auth_method in the provider metadata */
-		json_t *j_token_endpoint_auth_methods_supported = json_object_get(
-				j_provider, "token_endpoint_auth_methods_supported");
-
-		const char *token_endpoint_auth = NULL;
-
-		/* loop through the array provided by the issuer and see if there's a supported method */
-		if ((j_token_endpoint_auth_methods_supported != NULL)
-				&& (json_is_array(j_token_endpoint_auth_methods_supported))) {
-			int i;
-			for (i = 0;
-					i < json_array_size(j_token_endpoint_auth_methods_supported);
-					i++) {
-				json_t *elem = json_array_get(
-						j_token_endpoint_auth_methods_supported, i);
-				if (!json_is_string(elem)) {
-					oidc_error(r,
-							"unhandled in-array JSON object type [%d] in provider metadata for entry \"token_endpoint_auth_methods_supported\"",
-							elem->type);
-					continue;
-				}
-
-				/* take first supported method and prefer post over basic */
-				if ((apr_strnatcmp(json_string_value(elem),
-						"client_secret_post") == 0)
-						|| (apr_strnatcmp(json_string_value(elem),
-								"client_secret_basic") == 0)) {
-					token_endpoint_auth = json_string_value(elem);
-					break;
-				}
-			}
-		}
-
-		/* store the method if found */
-		if (token_endpoint_auth != NULL) {
-			provider->token_endpoint_auth = apr_pstrdup(r->pool,
-					token_endpoint_auth);
+		if (oidc_valid_string_in_array(r->pool, j_provider,
+				"token_endpoint_auth_methods_supported",
+				oidc_cfg_get_valid_endpoint_auth_function(cfg),
+				&provider->token_endpoint_auth,
+				TRUE) != NULL) {
+			oidc_error(r,
+					"could not find a supported token endpoint authentication method in provider metadata (%s) for entry \"token_endpoint_auth_methods_supported\"",
+					provider->issuer);
+			return FALSE;
 		}
 	}
 
 	return TRUE;
+}
+
+/*
+ * get a string value from a JSON object and see if it is a valid value according to the specified validation function
+ */
+void oidc_metadata_get_valid_string(request_rec *r, json_t *json,
+		const char *key, oidc_valid_function_t valid_function, char **str_value,
+		const char *default_str_value) {
+	char *v = NULL;
+	oidc_json_object_get_string(r->pool, json, key, &v, default_str_value);
+	if (v != NULL) {
+		const char *rv = valid_function(r->pool, v);
+		if (rv != NULL) {
+			oidc_warn(r,
+					"string value %s for key \"%s\" is invalid: %s; using default: %s",
+					v, key, rv, default_str_value);
+			v = apr_pstrdup(r->pool, default_str_value);
+		}
+	}
+	*str_value = v;
+}
+
+/*
+ * get an integer value from a JSON object and see if it is a valid value according to the specified validation function
+ */
+void oidc_metadata_get_valid_int(request_rec *r, json_t *json, const char *key,
+		oidc_valid_int_function_t valid_int_function, int *int_value,
+		int default_int_value) {
+	int v = 0;
+	oidc_json_object_get_int(r->pool, json, key, &v, default_int_value);
+	const char *rv = valid_int_function(r->pool, v);
+	if (rv != NULL) {
+		oidc_warn(r,
+				"integer value %d for key \"%s\" is invalid: %s; using default: %d",
+				v, key, rv, default_int_value);
+		v = default_int_value;
+	}
+	*int_value = v;
 }
 
 /*
@@ -1062,36 +1028,40 @@ apr_byte_t oidc_metadata_provider_parse(request_rec *r, json_t *j_provider,
 apr_byte_t oidc_metadata_conf_parse(request_rec *r, oidc_cfg *cfg,
 		json_t *j_conf, oidc_provider_t *provider) {
 
-	oidc_json_object_get_string(r->pool, j_conf, "client_jwks_uri",
-			&provider->client_jwks_uri, cfg->provider.client_jwks_uri);
+	oidc_metadata_parse_url(r, "conf", provider->issuer, j_conf,
+			"client_jwks_uri", &provider->client_jwks_uri,
+			cfg->provider.client_jwks_uri);
 
-	oidc_json_object_get_string(r->pool, j_conf, "id_token_signed_response_alg",
+	/* get the (optional) signing & encryption settings for the id_token */
+	oidc_metadata_get_valid_string(r, j_conf, "id_token_signed_response_alg",
+			oidc_valid_signed_response_alg,
 			&provider->id_token_signed_response_alg,
 			cfg->provider.id_token_signed_response_alg);
-	oidc_json_object_get_string(r->pool, j_conf,
-			"id_token_encrypted_response_alg",
+	oidc_metadata_get_valid_string(r, j_conf, "id_token_encrypted_response_alg",
+			oidc_valid_encrypted_response_alg,
 			&provider->id_token_encrypted_response_alg,
 			cfg->provider.id_token_encrypted_response_alg);
-	oidc_json_object_get_string(r->pool, j_conf,
-			"id_token_encrypted_response_enc",
+	oidc_metadata_get_valid_string(r, j_conf, "id_token_encrypted_response_enc",
+			oidc_valid_encrypted_response_enc,
 			&provider->id_token_encrypted_response_enc,
 			cfg->provider.id_token_encrypted_response_enc);
 
 	/* get the (optional) signing & encryption settings for the userinfo response */
-	oidc_json_object_get_string(r->pool, j_conf, "userinfo_signed_response_alg",
+	oidc_metadata_get_valid_string(r, j_conf, "userinfo_signed_response_alg",
+			oidc_valid_signed_response_alg,
 			&provider->userinfo_signed_response_alg,
 			cfg->provider.userinfo_signed_response_alg);
-	oidc_json_object_get_string(r->pool, j_conf,
-			"userinfo_encrypted_response_alg",
+	oidc_metadata_get_valid_string(r, j_conf, "userinfo_encrypted_response_alg",
+			oidc_valid_encrypted_response_alg,
 			&provider->userinfo_encrypted_response_alg,
 			cfg->provider.userinfo_encrypted_response_alg);
-	oidc_json_object_get_string(r->pool, j_conf,
-			"userinfo_encrypted_response_enc",
+	oidc_metadata_get_valid_string(r, j_conf, "userinfo_encrypted_response_enc",
+			oidc_valid_encrypted_response_enc,
 			&provider->userinfo_encrypted_response_enc,
 			cfg->provider.userinfo_encrypted_response_enc);
 
 	/* find out if we need to perform SSL server certificate validation on the token_endpoint and user_info_endpoint for this provider */
-	oidc_json_object_get_int(r->pool, j_conf, "ssl_validate_server",
+	oidc_metadata_parse_boolean(r, j_conf, "ssl_validate_server",
 			&provider->ssl_validate_server, cfg->provider.ssl_validate_server);
 
 	/* find out what scopes we should be requesting from this provider */
@@ -1101,17 +1071,18 @@ apr_byte_t oidc_metadata_conf_parse(request_rec *r, oidc_cfg *cfg,
 			cfg->provider.scope);
 
 	/* see if we've got a custom JWKs refresh interval */
-	oidc_json_object_get_int(r->pool, j_conf, "jwks_refresh_interval",
-			&provider->jwks_refresh_interval,
+	oidc_metadata_get_valid_int(r, j_conf, "jwks_refresh_interval",
+			oidc_valid_jwks_refresh_interval, &provider->jwks_refresh_interval,
 			cfg->provider.jwks_refresh_interval);
 
 	/* see if we've got a custom IAT slack interval */
-	oidc_json_object_get_int(r->pool, j_conf, "idtoken_iat_slack",
-			&provider->idtoken_iat_slack, cfg->provider.idtoken_iat_slack);
+	oidc_metadata_get_valid_int(r, j_conf, "idtoken_iat_slack",
+			oidc_valid_idtoken_iat_slack, &provider->idtoken_iat_slack,
+			cfg->provider.idtoken_iat_slack);
 
 	/* see if we've got a custom max session duration */
-	oidc_json_object_get_int(r->pool, j_conf, "session_max_duration",
-			&provider->session_max_duration,
+	oidc_metadata_get_valid_int(r, j_conf, "session_max_duration",
+			oidc_valid_session_max_duration, &provider->session_max_duration,
 			cfg->provider.session_max_duration);
 
 	/* see if we've got custom authentication request parameter values */
@@ -1124,8 +1095,14 @@ apr_byte_t oidc_metadata_conf_parse(request_rec *r, oidc_cfg *cfg,
 			cfg->provider.token_endpoint_params);
 
 	/* get the response mode to use */
-	oidc_json_object_get_string(r->pool, j_conf, "response_mode",
-			&provider->response_mode, cfg->provider.response_mode);
+	oidc_metadata_get_valid_string(r, j_conf, "response_mode",
+			oidc_valid_response_mode, &provider->response_mode,
+			cfg->provider.response_mode);
+
+	/* get the PKCE method to use */
+	oidc_metadata_get_valid_string(r, j_conf, "pkce_method",
+			oidc_valid_pkce_method, &provider->pkce_method,
+			cfg->provider.pkce_method);
 
 	/* get the client name */
 	oidc_json_object_get_string(r->pool, j_conf, "client_name",
@@ -1134,6 +1111,11 @@ apr_byte_t oidc_metadata_conf_parse(request_rec *r, oidc_cfg *cfg,
 	/* get the client contact */
 	oidc_json_object_get_string(r->pool, j_conf, "client_contact",
 			&provider->client_contact, cfg->provider.client_contact);
+
+	/* get the token endpoint authentication method */
+	oidc_metadata_get_valid_string(r, j_conf, "token_endpoint_auth",
+			oidc_cfg_get_valid_endpoint_auth_function(cfg),
+			&provider->token_endpoint_auth, provider->token_endpoint_auth);
 
 	/* get the dynamic client registration token */
 	oidc_json_object_get_string(r->pool, j_conf, "registration_token",
@@ -1144,9 +1126,40 @@ apr_byte_t oidc_metadata_conf_parse(request_rec *r, oidc_cfg *cfg,
 			&provider->registration_endpoint_json,
 			cfg->provider.registration_endpoint_json);
 
-	/* get the flow to use */
-	oidc_json_object_get_string(r->pool, j_conf, "response_type",
-			&provider->response_type, NULL);
+	/* get the flow to use; let the .client file set it otherwise (pass NULL as default value) */
+	oidc_metadata_get_valid_string(r, j_conf, "response_type",
+			oidc_valid_response_type, &provider->response_type,
+			NULL);
+
+	/* see if we've got a custom user info refresh interval */
+	oidc_metadata_get_valid_int(r, j_conf, "userinfo_refresh_interval",
+			oidc_valid_userinfo_refresh_interval,
+			&provider->userinfo_refresh_interval,
+			cfg->provider.userinfo_refresh_interval);
+
+	/* TLS client cert auth settings */
+	oidc_json_object_get_string(r->pool, j_conf,
+			"token_endpoint_tls_client_cert",
+			&provider->token_endpoint_tls_client_cert,
+			cfg->provider.token_endpoint_tls_client_cert);
+	oidc_json_object_get_string(r->pool, j_conf,
+			"token_endpoint_tls_client_key",
+			&provider->token_endpoint_tls_client_key,
+			cfg->provider.token_endpoint_tls_client_key);
+
+	oidc_json_object_get_string(r->pool, j_conf, "request_object",
+			&provider->request_object, cfg->provider.request_object);
+
+	/* see if we've got a custom userinfo endpoint token presentation method */
+	char *method = NULL;
+	oidc_metadata_get_valid_string(r, j_conf, "userinfo_token_method",
+			oidc_valid_userinfo_token_method, &method,
+			NULL);
+	if (method != NULL)
+		oidc_parse_userinfo_token_method(r->pool, method,
+				&provider->userinfo_token_method);
+	else
+		provider->userinfo_token_method = OIDC_USER_INFO_TOKEN_METHOD_HEADER;
 
 	return TRUE;
 }
@@ -1173,7 +1186,9 @@ apr_byte_t oidc_metadata_client_parse(request_rec *r, oidc_cfg *cfg,
 	if (token_endpoint_auth != NULL) {
 		if ((apr_strnatcmp(token_endpoint_auth, "client_secret_post") == 0)
 				|| (apr_strnatcmp(token_endpoint_auth, "client_secret_basic")
-						== 0)) {
+						== 0)
+						|| (apr_strnatcmp(token_endpoint_auth, "client_secret_jwt") == 0)
+						|| (apr_strnatcmp(token_endpoint_auth, "private_key_jwt") == 0)) {
 			provider->token_endpoint_auth = apr_pstrdup(r->pool,
 					token_endpoint_auth);
 		} else {
@@ -1234,7 +1249,7 @@ apr_byte_t oidc_metadata_get(request_rec *r, oidc_cfg *cfg, const char *issuer,
 	if (oidc_metadata_provider_get(r, cfg, issuer, &j_provider,
 			allow_discovery) == FALSE)
 		goto end;
-	if (oidc_metadata_provider_parse(r, j_provider, *provider) == FALSE)
+	if (oidc_metadata_provider_parse(r, cfg, j_provider, *provider) == FALSE)
 		goto end;
 
 	if (oidc_metadata_conf_get(r, cfg, issuer, &j_conf) == FALSE)
@@ -1250,6 +1265,7 @@ apr_byte_t oidc_metadata_get(request_rec *r, oidc_cfg *cfg, const char *issuer,
 	rc = TRUE;
 
 end:
+
 	if (j_provider)
 		json_decref(j_provider);
 	if (j_conf)

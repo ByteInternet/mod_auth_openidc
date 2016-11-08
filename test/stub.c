@@ -29,6 +29,10 @@ AP_DECLARE(const char *) ap_auth_type(request_rec *r) {
 	return "openid-connect";
 }
 
+AP_DECLARE(const char *) ap_auth_name(request_rec *r) {
+	return NULL;
+}
+
 AP_DECLARE(long) ap_get_client_block(request_rec * r, char * buffer,
 		apr_size_t bufsiz) {
 	return 0;
@@ -43,7 +47,7 @@ AP_DECLARE(char *) ap_getword_conf(apr_pool_t *p, const char **line) {
 }
 
 AP_DECLARE(char *) ap_getword_white(apr_pool_t *p, const char **line) {
-	return "";
+	return 0;
 }
 
 AP_DECLARE(int) ap_hook_check_user_id(request_rec *r) {
@@ -80,6 +84,14 @@ AP_DECLARE(void) ap_log_error_(const char *file, int line, int module_index, int
 AP_DECLARE(void) ap_log_error(const char *file, int line, int level,
 		apr_status_t status, const server_rec *s, const char *fmt, ...) {
 #endif
+	if (level < APLOG_DEBUG) {
+		fprintf(stderr, "%s:%d [%d] [%d] ", file, line, level, status);
+		va_list ap;
+		va_start(ap, fmt);
+		vfprintf(stderr, fmt, ap);
+		va_end(ap);
+		fprintf(stderr, "\n");
+	}
 }
 
 #if MODULE_MAGIC_NUMBER_MAJOR >= 20100714
@@ -154,4 +166,8 @@ AP_DECLARE(int) ap_unescape_url(char *url) {
 AP_DECLARE(apr_status_t) unixd_set_global_mutex_perms(
 		apr_global_mutex_t *gmutex) {
 	return APR_SUCCESS;
+}
+
+AP_DECLARE(const char *) ap_get_server_name(request_rec *r) {
+	return "www.example.com";
 }

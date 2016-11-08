@@ -18,7 +18,7 @@
  */
 
 /***************************************************************************
- * Copyright (C) 2013-2015 Ping Identity Corporation
+ * Copyright (C) 2013-2016 Ping Identity Corporation
  * All rights reserved.
  *
  * For further information please contact:
@@ -54,6 +54,8 @@
 #include <httpd.h>
 #include <http_config.h>
 #include <http_log.h>
+
+#include "apr_shm.h"
 
 #include "../mod_auth_openidc.h"
 
@@ -334,6 +336,7 @@ static int oidc_cache_shm_destroy(server_rec *s) {
 }
 
 oidc_cache_t oidc_cache_shm = {
+		0,
 		oidc_cache_shm_cfg_create,
 		oidc_cache_shm_post_config,
 		oidc_cache_shm_child_init,

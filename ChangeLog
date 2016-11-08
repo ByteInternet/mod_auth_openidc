@@ -1,3 +1,319 @@
+11/8/2016
+- log readable error messages when memcache operations fail
+
+11/6/2016
+- fix memory leak when skipping jwks_uri keys with a non-matching "use" value
+
+11/4/2016
+- always restore id_token/claims on sub-requests so e.g. listing claims-protected subdirectories will work
+- remove obsolete functions for storing the session in the request state
+- bump to 2.1.1rc0
+
+11/3/2016
+- remove obsolete sessions from session cache; thanks @stevedave
+
+11/1/2016
+- release version 2.1.0
+
+10/28/2016
+- don't include encryption keys from the jwks_uri when verifying a JWT and no kid has been specified
+- fix memory leaks in composite claim handling
+
+10/27/2016
+- handle aggregated and distributed claims from the userinfo endpoint
+- only pick private_key_jwt token endpoint authentication if a private key is configured; closes #189
+- bump to 2.0.1rc7
+
+10/24/2016
+- add OpenID Connect RP certification test script
+- handle non-integer exp/iat timestamps; closes #187; thanks @drdivano
+
+10/21/2016
+- bugfix: first truncate files before writing them
+- support refreshing provider metadata based on timestamp and OIDCProviderMetadataRefreshInterval
+
+10/20/2016
+- bugfix: correctly truncate encryption keys derived from client secret for algorithms that require a key size < 256 bits
+- add test/test-cmd tool
+- bugfix: return error on session cache failures; closes #185; thanks @solsson
+- bump to 2.0.1rc6
+
+10/18/2016
+- bugfix: JWTs with a header that doesn't specify a `kid` that would not validate when used with more than 1 key; closes #184; thanks @solsson
+- bump to 2.0.1rc5
+
+10/13/2016
+- urlencode provider URL cache key to fix file cache backend issue; closes #179, thanks @djahandarie
+
+10/9/2016
+- fix null pointer segfault in debug printout in oidc_util_read_form_encoded_params
+- fix OIDCOAuthAcceptTokenAs parsing flaw introduced in 2.0.0rc5
+- bump to 2.0.1rc4
+
+10/2/2016
+- support presenting the access token to the userinfo endpoint in a POST parameter
+- bump to 2.0.1rc3
+
+9/30/2016
+- support WebFinger Discovery with URL-style user identifiers
+
+9/28/2016
+- fix memory leak in oidc_jwk_to_json
+- add "remove_at_cache" hook; addresses #177
+- bump to 2.0.1rc2
+
+9/27/2016
+- add support for Request URI with signed and/or encrypted Request Objects
+- bump to 2.0.1rc1
+
+9/22/2016
+- refuse webfinger responses with an href value that is not on secure https
+- add userinfo JWT response verification and decryption
+
+9/20/2016
+- log the JWT header before optional decryption is applied
+
+9/19/2016
+- check that a sub claim returned from the userinfo endpoint matches the one in the id_token
+- fix issue in oidc_metadata_parse_url so that static default would not be honored
+  - this only affected server-wide OIDCClientJwksUri usage in dynamic client registration
+- non-functional changes for OIDC RP certification:
+  - explicitly log the client authentication method when calling the token endpoint
+  - log the keys that are included for token verification
+- bump to 2.0.1rc0
+
+9/9/2016
+- fix overriding provider token endpoint auth with static config when not set in .conf file
+- don't add our own cookies to the incoming headers
+- allow stripping cookies from the Cookie header sent to the application/backend with OIDCStripCookies
+- release 2.0.0
+
+9/5/2016
+- encapsulate (sub-)directory config handling and fix merging so values can be set back to default values in subdirs
+- bump to 2.0.0rc5
+
+9/2/2016
+- fix JWK creation when no client secret is set e.g. in Implicit flows; closes #168; thanks @asc1
+- bump to 2.0.0rc4
+
+9/1/2016
+- fix HTML decoding of OIDCPreservePost data; closes #165
+- limit max POST data size to 1Mb
+- allow chunked data in POST handling; revise handler
+- change preserve POST JSON data format to urlencoded for performance reasons
+
+8/31/2016
+- allow setting the token endpoint authentication method in the .conf file (for dynamic client registration that sets the .client)
+
+8/30/2016
+- pass refresh token in header/environment variable with OIDCPassRefreshToken; thanks Amit Joshi
+- fix front-channel img-style logout with newer versions of PingFederate that don't send an Accept: image/png header
+
+8/29/2016
+- preserve POST data across authentication requests and discovery with OIDCPreservePost
+- bump to 2.0.0rc3
+
+8/24/2016
+- fix parsing of OIDCOAuthAcceptTokenAs to accept options following ":"
+- bump to 2.0.0rc2
+
+8/5/2016
+- delete the debian directory
+- rename OIDCOAuthTokenEndpointCert/Key to OIDCOAuthIntrospectionEndpointCert/Key
+- pre-release 2.0.0rc1
+
+7/30/2016
+- encrypt state/session JWT cookies and session JWT cache values for non-shm storages
+
+7/29/2016
+- use cjose - https://github.com/cisco/cjose (master) - for JOSE functions
+- use stricter input parsing functions for configuration values
+- bump to 2.0.0rc0
+
+7/21/2016
+- support TLS client authentication to token and introspection endpoints
+- bump to 1.9.0rc3
+
+7/19/2016
+- add support for chunked session cookies; closes #153; thanks @glatzert 
+- bump to 1.9.0rc2
+
+7/9/2016
+- fix Elliptic Curve signature verification for corrupted input
+- support OpenSSL 1.1.x
+- bump to 1.9.0rc1
+
+7/5/2016
+- use AUTHZ_DENIED instead of HTTP_UNAUTHORIZED in oidc_authz_checker; closes #151; thanks @gwollman
+- use signed JWTs for state/session cookies
+- achieve smaller client-cookie sizes for regular cases; no id_token is stored in the session:
+  - (optional) id_token_hint no longer available in session management calls (logout/prompt=none) with "OIDCSessionType client-cookie"
+  - "OIDCPassIDTokenAs serialized" is not available with "OIDCSessionType client-cookie"
+- bump to 1.9.0rc0
+
+6/27/2016
+- use EVP_CIPHER_CTX_new to avoid compilation errors with OpenSSL 1.1.0
+- release 1.8.10
+
+6/22/2016
+- don't use local port setting for current URL determination when X-Forwarded-Host has been set
+- bump to 1.8.10rc4
+
+6/20/2016
+- fix memory leak in OAuth access token introspection result caching (introduced only in 1.8.10rc0)
+- fix setting private_key_jwt or client_secret_jwt with OIDCProviderTokenEndpointAuth
+- bump to 1.8.10rc3
+
+6/19/2016
+- allow setting OIDCRemoteUserClaim with values obtained from the userinfo endpoint; thanks @steve-dave
+- fix OIDCUnAuthAction pass mode for Apache 2.4 and in case `Require claim` primitives used for 2.4 and 2.2; thanks @steve-dave
+- bump to 1.8.10rc2
+
+6/15/2016
+- add support for JWT based client authentication to the token endpoint (client_secret_jwt, private_key_jwt)
+- bump to 1.8.10rc1
+
+6/9/2016
+- add per-path configurable token introspection result cache expiry with OIDCOAuthTokenIntrospectionInterval
+- bump to 1.8.10rc0
+
+6/5/2016
+- release 1.8.9
+
+5/9/2016
+- support 410 option on OIDCUnAuthAction; closes #141
+- bump to 1.8.9rc6
+
+5/1/2016
+- avoid segmentation fault on invalid OIDC configuration when OIDCRedirectURI is not set; fixes #138; thanks @brianwcook
+- bump to 1.8.9rc5
+
+4/18/2016
+- fix get_current_url (proxy) case where r->parsed_uri.path would be null
+
+4/13/2016
+- improve X-Forwarded-Host handling over Host in a) port detection and b) remove port from host value
+- bump to 1.8.9rc4
+
+4/10/2016
+- do not require OIDCClientSecret in configs; allows for Implicit grant without setting a dummy client secret; closes #130
+- allow for public clients calling the token endpoint
+- bump to 1.8.9rc3
+
+4/9/2016
+- ensure that claims from id_token are available for authz also when OIDCPassIDTokenAs does not contain "claims"; closes #129
+- bump to 1.8.9rc2
+
+4/3/2016
+- return WWW-Authenticate header and error messages on OAuth paths where access is not granted; closes #124; thanks @spinto
+- bump to 1.8.9rc1
+
+4/1/2016
+- apr_jwe_decrypt_content_aesgcm() null terminate string, #128, thanks @jdennis
+- bump to 1.8.9rc0
+
+3/10/2016
+- release 1.8.8
+
+3/7/2016
+- issue a warning if the "openid" scope is not requested
+
+3/6/2016
+- sanitize the OIDCAuthNHeader value before setting the header; thanks @rfk
+- bump to 1.8.8rc7
+
+3/5/2016
+- log exact version of OpenSSL and EC/GCM/Redis support
+- tidy up auth_openidc.conf docs
+- bump to 1.8.8rc6
+
+2/26/2016
+- add option to refresh claims from the userinfo endpoint using OIDCUserInfoRefreshInterval; see #119
+- merge id_token claims in to the set of claims used for authorization for Apache >=2.4; see #120
+- bump to 1.8.8rc5
+
+2/23/2016
+- make state cookie a session cookie and clean expired cookies on entry (merge of fix-firefox-cookie-storage)
+- fix HTML error template initialization in vhosts
+- bump to 1.8.8rc4
+
+2/22/2016
+- don't authenticate (redirect/state) when X-Requested-With header exists; as suggested in #113
+- bump to 1.8.8rc3
+
+2/18/2016
+- pass plain state to the token endpoint on code flows: https://tools.ietf.org/html/draft-jones-oauth-mix-up-mitigation-01
+- fix loose (prefix-only) matching of cookie names
+- allow passing OAuth bearer token as a cookie (OIDCOAuthAcceptTokenAs extension for PingAccess)
+- bump to 1.8.8rc2
+
+2/11/2016
+- include token_endpoint_auth_method in dynamic client registration request, set to selected method from provider
+
+2/10/2016
+- Elliptic Curve support now requires OpenSSL 1.0.1 detection
+- bump to 1.8.8rc1
+
+1/14/2016
+- add support for passing in OAuth bearer tokens as one or more of: header, post param or query param (OIDCOAuthAcceptTokenAs)
+- bump to 1.8.8rc0
+
+1/8/2016
+- release 1.8.7
+
+1/7/2016
+- update copyright year
+
+12/17/2015
+- enforce strict matching of issuer in Discovery document against the originally requested issuer
+- check iss/client_id if present in an authentication response
+- push a hash of state to the token endpoint on code flows
+- bump to 1.8.7rc4
+
+12/9/2015
+- improve debug logging around session management capabilities (i.e. enabled/disabled)
+- return 404 for op/rp iframes if session management is not enabled
+- bump to 1.8.7rc3
+
+12/4/2015
+- add support for RFC 7636 PKCE plain & S256 https://tools.ietf.org/html/rfc7636
+- bump to 1.8.7rc2
+
+12/3/2015
+- fix crash when using a custom error template and the error description is NULL
+- fix crash when target_link_uri is not a valid URI or parts are empty
+- fix memory corruption when using custom html template across different server requests; closes #106
+- bump to 1.8.7rc1
+
+11/18/2015
+- fix compiler warning on double sizeof call; close #103; thanks to @dcb314
+- bump to 1.8.7rc0
+
+10/26/2015
+- add option to make session cookie persistent; closes #97
+- release 1.8.6
+
+10/19/2015
+- add support for applying a custom HTML error template with OIDCHTMLErrorTemplate
+- bump to 1.8.6rc3
+
+10/12/2015
+- check the cookie domain that the session was created for against the configured domain
+- log a warning if the Set-Cookie value length is greater than 4093 bytes
+- include and prioritize the X-Forwarded-Host header in hostname determination
+- allow for missing Host header i.e. HTTP 1.0
+- return DONE instead of HTTP_UNAUTHORIZED with Discovery page (prevent double HTML in HTTP 1.0)
+- use apr_strnatcmp instead of strcmp in util.c and mod_auth_openidc.c
+- bump to 1.8.6rc2
+
+10/9/2015
+- support subdomain cookies in OIDCCookieDomain checks; PR #96, thanks @pfiled
+- bump to 1.8.6rc1
+
+10/6/2015
+- add key identifier ("kid") option to `OIDCOAuthVerifySharedKeys`, `OIDCOAuthVerifyCertFiles` and `OIDCPublicKeyFiles` configs
+- bump to 1.8.6rc0
+
 9/21/2015
 - support (non-sid-based) HTTP logout: http://openid.net/specs/openid-connect-logout-1_0.html
 - release 1.8.5

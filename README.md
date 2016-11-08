@@ -43,7 +43,7 @@ It supports [OpenID Connect Dynamic Client Registration]
 Discovery] (http://openid.net/specs/openid-connect-discovery-1_0.html) through domain
 or account names and [OAuth 2.0 Form Post Response Mode]
 (http://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html).
-It also supports [OpenID Connect Session Management draft 22]
+It also supports [OpenID Connect Session Management]
 (http://openid.net/specs/openid-connect-session-1_0.html). See the [Wiki]
 (https://github.com/pingidentity/mod_auth_openidc/wiki/Session-Management) for information
 on how to configure it.
@@ -156,6 +156,7 @@ Entries that can be included in the .conf file are:
     "scope"                              overrides OIDCScope 
     "response_type"                      overrides OIDCResponseType 
     "response_mode"                      overrides OIDCResponseMode 
+    "pkce_method"                        overrides OIDCPKCEMethod
     "client_name"                        overrides OIDCClientName 
     "client_contact"                     overrides OIDCClientContact 
     "idtoken_iat_slack"                  overrides OIDCIDTokenIatSlack
@@ -170,7 +171,11 @@ Entries that can be included in the .conf file are:
     "userinfo_encrypted_response_enc"    overrides OIDCUserInfoEncryptedResponseEnc
     "auth_request_params"                overrides OIDCAuthRequestParams
     "token_endpoint_params"              overrides OIDCProviderTokenEndpointParams
+    "token_endpoint_auth"                overrides OIDCProviderTokenEndpointAuth
     "registration_endpoint_json"         overrides OIDCProviderRegistrationEndpointJson
+    "userinfo_refresh_interval"          overrides OIDCUserInfoRefreshInterval
+    "userinfo_token_method"              overrides OIDCUserInfoTokenMethod
+    "request_object"                     overrides OIDCRequestObject
     "registration_token"                 an access_token that will be used on client registration calls for the associated OP
 
 Sample client metadata for issuer `https://localhost:9031`, so the **mod_auth_openidc**
@@ -197,12 +202,10 @@ OIDCCryptoPassphrase <password>
 
 If you do not want to use the internal discovery page (you really shouldn't...), you
 can have the user being redirected to an external discovery page by setting
-`OIDCDiscoverURL`. That URL will be accessed with 2 parameters, `oidc_callback` and
-`target_link_uri` (both URLs). The `target_link_uri` parameter value needs to be returned to the
-`oidc_callback` URL (again in the `target_link_uri parameter`) together with an
-`iss` parameter that contains the URL-encoded issuer value of the
-selected Provider, or a URL-encoded account name for OpenID Connect Discovery
-purposes (aka. e-mail style identifier), or a domain name.
+`OIDCDiscoverURL`. That URL will be accessed with a number parameters: `oidc_callback`, `target_link_uri`,
+`method` and `x_csrf`. All parameters (except `oidc_callback`) need to be returned to the `oidc_callback` URL
+together with an `iss` parameter that contains the URL-encoded issuer value of the selected Provider, or a
+URL-encoded account name for OpenID Connect Discovery purposes (aka. e-mail style identifier), or a domain name.
 
 Sample callback:
 

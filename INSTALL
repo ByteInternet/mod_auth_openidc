@@ -1,5 +1,6 @@
-If your looking for binary packages, please see:
-  https://github.com/pingidentity/mod_auth_openidc/wiki#8-where-can-i-get-binary-packages
+Preferably you should use one of the pre-compiled binary packages, available for
+various platforms, see:
+  https://github.com/pingidentity/mod_auth_openidc/wiki#11-where-can-i-get-binary-packages
 and proceed with the Configuration section below.
 
 If your platform is not supported or you want to run the latest code,
@@ -11,7 +12,8 @@ Installation from source
 You will require development headers and tools for the following
 dependencies:
  Apache (>=2.0)
- OpenSSL (>=0.9.8) (>=1.0 for Elliptic Curve support)
+ cjose (>=0.4.1)
+ OpenSSL (>=0.9.8) (>=1.0.1 for Elliptic Curve support)
  Curl (>=?)
  Jansson (>=2.0) (JSON parser for C)
  pcre3 (>=?) (Regular Expressions support)
